@@ -1,5 +1,7 @@
-#include <dirt/pathguide.h>
+#include <mitsuba/render/pathguide.h>
 #include <stack> // std::stack
+
+NAMESPACE_BEGIN(mitsuba)
 
 #define check(x)                                                               \
     if (!(x))                                                                  \
@@ -11,16 +13,16 @@ static Vec2f Euler2Angles(const Vec3f &dir) {
     const float cosTheta = std::min(std::max(dir.z, -1.0f), 1.0f);
     float phi            = std::atan2(dir.y, dir.x);
     while (phi < 0.f) {
-        phi += 2.f * M_PI;
+        phi += 2.f * dr::Pi<float>;
     }
 
-    return Vec2f((cosTheta + 1.f) * 0.5f, phi * 1.f / (2.f * M_PI));
+    return Vec2f((cosTheta + 1.f) * 0.5f, phi * 1.f / (2.f * dr::Pi<float>) );
 }
 
 // utility method to go from Vec2f (theta, phi) -> Vec3f (roll, pitch, yaw)
 static Vec3f Angles2Euler(const Vec2f &pos) {
     const float cosTheta = 2.f * pos.x - 1.f;
-    const float phi      = 2.f * M_PI * pos.y;
+    const float phi      = 2.f * dr::Pi<float> * pos.y;
     const float sinTheta = std::sqrt(1.f - cosTheta * cosTheta);
     return Vec3f(sinTheta * std::cos(phi), sinTheta * std::sin(phi), cosTheta);
 }
@@ -56,6 +58,8 @@ static Vec2f NormalizeForQuad(const Vec2f &pos, const size_t quad) {
     check(ret.y >= 0.f && ret.y <= 0.5f);
     return 2.f * ret; // map [0, 0.5] -> [0, 1]
 }
+
+float randf() { return std::rand() / RAND_MAX; }
 
 //-------------------DTreeWrapper-------------------//
 
@@ -166,7 +170,7 @@ void PathGuide::DTreeWrapper::build() {
 float PathGuide::DTreeWrapper::sample_pdf(const Vec3f &dir) const {
     const auto &tree = prev;
 
-    float pdf = 1.f / (4.f * M_PI); // default naive pdf (unit sphere)
+    float pdf = 1.f / (4.f * dr::Pi<float>); // default naive pdf (unit sphere)
     if (tree.nodes.size() == 0 || tree.num_samples == 0 || tree.sum == 0.f)
         return pdf;
 
@@ -299,7 +303,7 @@ PathGuide::SpatialTree::SpatialTree() {
     nodes.resize(1); // allocate root node
 }
 
-void PathGuide::SpatialTree::set_bounds(const Box3f &b) { bounds = b; }
+void PathGuide::SpatialTree::set_bounds(const Imath::Box3f &b) { bounds = b; }
 
 void PathGuide::SpatialTree::begin_next_tree_iteration() {
     for (auto &node : nodes)
@@ -370,8 +374,7 @@ PathGuide::SpatialTree::get_direction_tree(const Vec3f &pos) const {
     // find the leaf node that contains this position
 
     // use a position normalized [0 -> 1]^3 within this dTree's bbox
-    const Vec3f bbox_size = bounds.pMax - bounds.pMin;
-    Vec3f x               = (pos - bounds.pMin) / bbox_size;
+    Vec3f x = (pos - bounds.min) / bounds.size();
 
     check(nodes.size() > 0); // need at least a root node!
 
@@ -396,9 +399,9 @@ PathGuide::SpatialTree::get_direction_tree(const Vec3f &pos) const {
 
 //-------------------PathGuide-------------------//
 
-void PathGuide::initialize(const Box3f &bbox, const size_t num_iters) {
-    std::cout << "initialized path guide with bounds: " << bbox.pMin << " -> "
-              << bbox.pMax << std::endl;
+void PathGuide::initialize(const Imath::Box3f &bbox, const size_t num_iters) {
+    std::cout << "initialized path guide with bounds: " << bbox.min << " -> "
+              << bbox.max << std::endl;
     num_refinements_necessary = num_iters;
     spatial_tree.set_bounds(bbox);
     refine_and_reset(spatial_tree_thresh); // initial refinement/reset
@@ -421,7 +424,7 @@ void PathGuide::refine_and_reset() {
 }
 
 void PathGuide::add_radiance(const Vec3f &pos, const Vec3f &dir,
-                             const Color3f &radiance) {
+                             const Color<float> &radiance) {
     this->add_radiance(pos, dir, luminance(radiance)); // convert to luminance
 }
 
@@ -441,3 +444,5 @@ Vec3f PathGuide::sample_dir(const Vec3f &pos, float &pdf) const {
     pdf             = dir_tree.sample_pdf(ret);
     return ret;
 }
+
+NAMESPACE_END(mitsuba)

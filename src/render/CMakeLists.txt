@@ -59,6 +59,7 @@ add_library(mitsuba-render OBJECT
   integrator.cpp   ${INC_DIR}/integrator.h
                    ${INC_DIR}/interaction.h
   medium.cpp       ${INC_DIR}/medium.h
+  pathguide.cpp    ${INC_DIR}/pathguide.h
   mesh.cpp         ${INC_DIR}/mesh.h
   microfacet.cpp   ${INC_DIR}/microfacet.h
                    ${INC_DIR}/mueller.h
