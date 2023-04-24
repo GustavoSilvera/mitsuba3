@@ -1,22 +1,18 @@
 #pragma once
 
 // #include <Imath/ImathVec.h>        // Vec3
-#include <mitsuba/core/bbox.h> // ScalarBoundingBox3f
-// #include <mitsuba/core/fwd.h>
 #include <mitsuba/core/atomic.h>   // AtomicFloat
+#include <mitsuba/core/bbox.h>     // ScalarBoundingBox3f
+#include <mitsuba/core/fwd.h>      // MI_IMPORT_CORE_TYPES_PREFIX
 #include <mitsuba/core/spectrum.h> // Spectrum
 #include <mitsuba/core/vector.h>   // Vector
 
 NAMESPACE_BEGIN(mitsuba)
 
-typedef dr::DiffArray<dr::LLVMArray<float>> Float;
-typedef mitsuba::Vector<Float, 2> Vec2f;
-typedef mitsuba::Vector<Float, 3> Vec3f;
-typedef mitsuba::Point<Float, 3> Point3f;
-typedef mitsuba::Color<Float, 3> Color3f;
-typedef BoundingBox<Point<float, 3>> ScalarBoundingBox3f;
+template <typename Float, typename Spectrum> class MI_EXPORT_LIB PathGuide {
+public:
+    MI_IMPORT_CORE_TYPES() // imports types such as Vector3f, Point3f, Color3f
 
-class PathGuide {
 private: // hyperparameters
     // these are the primary hyperparameters to tune the pathguiding algorithm
     const size_t spatial_tree_thresh = 12000; // spatial tree sample threshold
@@ -42,13 +38,20 @@ public: // public API
     void refine_and_reset();
 
     // to keep track of radiance in the lightfield
-    void add_radiance(const Point3f &pos, const Vec3f &dir,
+    void add_radiance(const Point3f &pos, const Vector3f &dir,
                       const Color3f &radiance) const;
-    void add_radiance(const Point3f &pos, const Vec3f &dir,
+    void add_radiance(const Point3f &pos, const Vector3f &dir,
                       const Float luminance) const;
 
     // to (importance) sample a direction and its corresponding pdf
-    Vec3f sample_dir(const Vec3f &pos, Float &pdf) const;
+    Vector3f sample(const Vector3f &pos, Float &pdf) const;
+
+public:
+    // utility methods
+    static Vector2f Euler2Angles(const Vector3f &dir);
+    static Vector3f Angles2Euler(const Vector2f &pos);
+    static size_t Angles2Quadrant(const Vector2f &pos);
+    static Vector2f NormalizeForQuad(const Vector2f &pos, const size_t quad);
 
 private: // DirectionTree (and friends) declaration
     class DTreeWrapper {
@@ -62,10 +65,10 @@ private: // DirectionTree (and friends) declaration
             current.num_samples.store(num_samples);
         }
 
-        Float sample_pdf(const Vec3f &dir) const;
-        Vec3f sample_dir() const;
+        Float sample_pdf(const Vector3f &dir) const;
+        Vector3f sample_dir() const;
 
-        void add_sample(const Vec3f &dir, const Float lum);
+        void add_sample(const Vector3f &dir, const Float lum);
 
         // destroy all memory used by this class (danger!)
         // (probably only want this if you KNOW you aren't going to use this
@@ -158,8 +161,8 @@ private: // DirectionTree (and friends) declaration
 private: // SpatialTree (whose leaves are DirectionTrees) declaration
     class SpatialTree {
     public:
-        SpatialTree();
-        void set_bounds(const ScalarBoundingBox3f &bounds);
+        SpatialTree() { nodes.resize(1); }
+        void set_bounds(const ScalarBoundingBox3f &b) { bounds = b; }
         void begin_next_tree_iteration();
         void refine(const size_t sample_threshold);
         void reset_leaves(const size_t max_depth, const Float rho);
