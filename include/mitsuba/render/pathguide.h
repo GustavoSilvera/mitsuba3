@@ -3,15 +3,17 @@
 // #include <Imath/ImathVec.h>        // Vec3
 #include <mitsuba/core/bbox.h> // ScalarBoundingBox3f
 // #include <mitsuba/core/fwd.h>
+#include <mitsuba/core/atomic.h>   // AtomicFloat
 #include <mitsuba/core/spectrum.h> // Spectrum
 #include <mitsuba/core/vector.h>   // Vector
 
-#include <atomic>
-
 NAMESPACE_BEGIN(mitsuba)
 
-typedef mitsuba::Vector<float, 2> Vec2f;
-typedef mitsuba::Vector<float, 3> Vec3f;
+typedef dr::DiffArray<dr::LLVMArray<float>> Float;
+typedef mitsuba::Vector<Float, 2> Vec2f;
+typedef mitsuba::Vector<Float, 3> Vec3f;
+typedef mitsuba::Point<Float, 3> Point3f;
+typedef mitsuba::Color<Float, 3> Color3f;
 typedef BoundingBox<Point<float, 3>> ScalarBoundingBox3f;
 
 class PathGuide {
@@ -19,7 +21,7 @@ private: // hyperparameters
     // these are the primary hyperparameters to tune the pathguiding algorithm
     const size_t spatial_tree_thresh = 12000; // spatial tree sample threshold
     // amount of energy from the previous tree to use for refiment
-    const float rho = 0.01f;
+    const Float rho = 0.01f;
     // maximum number of children in leaf d-trees
     const size_t max_DTree_depth = 20;
     // number of refinements until can sample
@@ -40,18 +42,18 @@ public: // public API
     void refine_and_reset();
 
     // to keep track of radiance in the lightfield
-    void add_radiance(const Vec3f &pos, const Vec3f &dir,
-                      const Color<float> &radiance);
-    void add_radiance(const Vec3f &pos, const Vec3f &dir,
-                      const float luminance);
+    void add_radiance(const Point3f &pos, const Vec3f &dir,
+                      const Color3f &radiance) const;
+    void add_radiance(const Point3f &pos, const Vec3f &dir,
+                      const Float luminance) const;
 
     // to (importance) sample a direction and its corresponding pdf
-    Vec3f sample_dir(const Vec3f &pos, float &pdf) const;
+    Vec3f sample_dir(const Vec3f &pos, Float &pdf) const;
 
 private: // DirectionTree (and friends) declaration
     class DTreeWrapper {
     public:
-        void reset(size_t max_depth, float thresh);
+        void reset(size_t max_depth, Float rho);
         void build();
 
         size_t get_num_samples() const { return current.num_samples.load(); }
@@ -60,10 +62,10 @@ private: // DirectionTree (and friends) declaration
             current.num_samples.store(num_samples);
         }
 
-        float sample_pdf(const Vec3f &dir) const;
+        Float sample_pdf(const Vec3f &dir) const;
         Vec3f sample_dir() const;
 
-        void add_sample(const Vec3f &dir, const float lum);
+        void add_sample(const Vec3f &dir, const Float lum);
 
         // destroy all memory used by this class (danger!)
         // (probably only want this if you KNOW you aren't going to use this
@@ -84,31 +86,31 @@ private: // DirectionTree (and friends) declaration
 
             struct DirNode {
                 DirNode() = default;
-                std::array<std::atomic<float>, 4> data;
+                std::array<AtomicFloat<Float>, 4> data;
                 std::array<size_t, 4> children{};
                 bool sample(size_t &quadrant) const;
                 bool bIsLeaf(size_t idx) const { return children[idx] == 0; }
-                float sum() const {
-                    float total = 0.f;
+                Float sum() const {
+                    Float total = 0.f;
                     for (const auto &x : data)
-                        total += x.load();
+                        total += Float(x); // x.load(std::memory_order_relaxed)
                     return total;
                 }
-                void data_fill(const float new_data) {
-                    for (std::atomic<float> &x : data) {
-                        x.store(new_data);
+                void data_fill(const Float new_data) {
+                    for (auto &x : data) {
+                        x = new_data; // atomic store
                     }
                 }
                 DirNode &operator=(const DirNode &other) {
                     children = other.children;
                     for (size_t i = 0; i < data.size(); i++) {
-                        data[i] = other.data[i].load();
+                        data[i] = Float(other.data[i]);
                     }
                     return *this;
                 }
                 DirNode(const DirNode &other) : children(other.children) {
                     for (size_t i = 0; i < data.size(); i++) {
-                        data[i] = other.data[i].load();
+                        data[i] = Float(other.data[i]);
                     }
                 }
             };
@@ -118,7 +120,7 @@ private: // DirectionTree (and friends) declaration
                 max_depth = other.max_depth;
                 nodes     = other.nodes;
                 // assign atomics here
-                sum         = other.sum.load();
+                sum = Float(other.sum); // load(std::memory_order_relaxed)
                 num_samples = other.num_samples.load();
                 return *this;
             }
@@ -128,11 +130,11 @@ private: // DirectionTree (and friends) declaration
                 : max_depth(other.max_depth), nodes(other.nodes) {
                 // assign atomics here
                 num_samples = other.num_samples.load();
-                sum         = other.sum.load();
+                sum = Float(other.sum); // load(std::memory_order_relaxed)
             }
 
             std::atomic<size_t> num_samples;
-            std::atomic<float> sum;
+            AtomicFloat<Float> sum;
             size_t max_depth = 0;
             std::vector<DirNode> nodes;
         };
@@ -160,13 +162,13 @@ private: // SpatialTree (whose leaves are DirectionTrees) declaration
         void set_bounds(const ScalarBoundingBox3f &bounds);
         void begin_next_tree_iteration();
         void refine(const size_t sample_threshold);
-        void reset_leaves(const size_t max_depth, const float rho);
+        void reset_leaves(const size_t max_depth, const Float rho);
 
-        DTreeWrapper &get_direction_tree(const Vec3f &pos) {
+        DTreeWrapper &get_direction_tree(const Point3f &pos) {
             return const_cast<DTreeWrapper &>(
                 const_cast<const SpatialTree *>(this)->get_direction_tree(pos));
         }
-        const DTreeWrapper &get_direction_tree(const Vec3f &pos) const;
+        const DTreeWrapper &get_direction_tree(const Point3f &pos) const;
         // {
         //     return const_cast<SpatialTree *>(this)->get_direction_tree(pos);
         // }

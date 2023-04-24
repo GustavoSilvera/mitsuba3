@@ -10,9 +10,9 @@ NAMESPACE_BEGIN(mitsuba)
 
 // utility method to go from Vec3f (roll, pitch, yaw) -> Vec2f (theta, phi)
 static Vec2f Euler2Angles(const Vec3f &dir) {
-    const float cosTheta = std::min(std::max(dir.z(), -1.0f), 1.0f);
-    float phi            = std::atan2(dir.y(), dir.x());
-    while (phi < 0.f) {
+    const Float cosTheta = dr::clamp(dir.z(), -1.f, 1.f);
+    Float phi            = dr::atan2(dir.y(), dir.x());
+    while (dr::any_or<true>(phi < 0.f)) {
         phi += 2.f * dr::Pi<float>;
     }
 
@@ -21,55 +21,57 @@ static Vec2f Euler2Angles(const Vec3f &dir) {
 
 // utility method to go from Vec2f (theta, phi) -> Vec3f (roll, pitch, yaw)
 static Vec3f Angles2Euler(const Vec2f &pos) {
-    const float cosTheta = 2.f * pos.x() - 1.f;
-    const float phi      = 2.f * dr::Pi<float> * pos.y();
-    const float sinTheta = std::sqrt(1.f - cosTheta * cosTheta);
-    return Vec3f(sinTheta * std::cos(phi), sinTheta * std::sin(phi), cosTheta);
+    const Float cosTheta = 2.f * pos.x() - 1.f;
+    const Float phi      = 2.f * dr::Pi<float> * pos.y();
+    const Float sinTheta = dr::sqrt(1.f - cosTheta * cosTheta);
+    return Vec3f(sinTheta * dr::cos(phi), sinTheta * dr::sin(phi), cosTheta);
 }
 
 static size_t Angles2Quadrant(const Vec2f &pos) {
     // takes the 2D location input and returns the corresponding quadrant
-    check(pos.x() >= 0.0f && pos.x() <= 1.0f && pos.y() >= 0.0f &&
-          pos.y() <= 1.0f);
+    check(dr::any_or<true>(pos.x() >= 0.0f && pos.x() <= 1.0f &&
+                           pos.y() >= 0.0f && pos.y() <= 1.0f));
 
-    if (pos.x() < 0.5f && pos.y() < 0.5f) // top left (quadrant 0)
+    if (dr::any_or<true>(pos.x() < 0.5f && pos.y() < 0.5f)) // top left
+                                                            // (quadrant 0)
         return 0;
-    else if (pos.y() < 0.5f) // must be top right (quadrant 1)
+    else if (dr::any_or<true>(pos.y() < 0.5f)) // must be top right (quadrant 1)
         return 1;
-    else if (pos.x() < 0.5f) // must be bottom left (quadrant 2)
+    else if (dr::any_or<true>(pos.x() < 0.5f)) // must be bottom left (quadrant
+                                               // 2)
         return 2;
     return 3;
 }
 
 static Vec2f NormalizeForQuad(const Vec2f &pos, const size_t quad) {
-    check(pos.x() >= 0.0f && pos.x() <= 1.0f && pos.y() >= 0.0f &&
-          pos.y() <= 1.0f);
+    check(dr::any_or<true>(pos.x() >= 0.0f && pos.x() <= 1.0f &&
+                           pos.y() >= 0.0f && pos.y() <= 1.0f));
     check(quad <= 3);
     Vec2f ret = pos;
     if (quad == 0) // top left (quadrant 0)
     {              // do nothing! (already within [0,0.5] for both x and y)
-        check(ret.x() >= 0.f && ret.x() <= 0.5f);
-        check(ret.y() >= 0.f && ret.y() <= 0.5f);
+        check(dr::any_or<true>(ret.x() >= 0.f && ret.x() <= 0.5f));
+        check(dr::any_or<true>(ret.y() >= 0.f && ret.y() <= 0.5f));
     } else if (quad == 1)          // top right (quadrant 1)
         ret -= Vec2f{ 0.5f, 0.f }; // map (x) [0.5, 1] -> [0, 0.5]
     else if (quad == 2)            // bottom left (quadrant 2)
         ret -= Vec2f{ 0.f, 0.5f }; // map (y) [0.5, 1] -> [0, 0.5]
     else
         ret -= Vec2f{ 0.5f, 0.5f }; // map (x & y) [0.5, 1] -> [0, 0.5]
-    check(ret.x() >= 0.f && ret.x() <= 0.5f);
-    check(ret.y() >= 0.f && ret.y() <= 0.5f);
+    check(dr::any_or<true>(ret.x() >= 0.f && ret.x() <= 0.5f));
+    check(dr::any_or<true>(ret.y() >= 0.f && ret.y() <= 0.5f));
     return 2.f * ret; // map [0, 0.5] -> [0, 1]
 }
 
-float randf() { return std::rand() / RAND_MAX; }
+Float randf() { return std::rand() / RAND_MAX; }
 
 //-------------------DTreeWrapper-------------------//
 
-void PathGuide::DTreeWrapper::add_sample(const Vec3f &dir, const float lum) {
+void PathGuide::DTreeWrapper::add_sample(const Vec3f &dir, const Float lum) {
     auto &tree = current;
     Vec2f pos  = Euler2Angles(dir);
     tree.num_samples++;
-    tree.sum = tree.sum.load() + lum;
+    tree.sum += lum;
 
     if (tree.nodes.size() == 0)
         tree.nodes.resize(1); // ensure always have a root node!
@@ -81,7 +83,7 @@ void PathGuide::DTreeWrapper::add_sample(const Vec3f &dir, const float lum) {
         check(node != nullptr);
         const size_t quad_idx = Angles2Quadrant(pos);
         pos                   = NormalizeForQuad(pos, quad_idx);
-        node->data[quad_idx]  = node->data[quad_idx].load() + lum;
+        node->data[quad_idx] += lum;
         if (node->bIsLeaf(quad_idx))
             break;
         size_t child_idx = node->children[quad_idx];
@@ -89,7 +91,7 @@ void PathGuide::DTreeWrapper::add_sample(const Vec3f &dir, const float lum) {
     }
 }
 
-void PathGuide::DTreeWrapper::reset(const size_t max_depth, const float rho) {
+void PathGuide::DTreeWrapper::reset(const size_t max_depth, const Float rho) {
     // clear and re-initialize the nodes
     current.nodes.clear();
     current.nodes.resize(1);
@@ -108,7 +110,7 @@ void PathGuide::DTreeWrapper::reset(const size_t max_depth, const float rho) {
 
     const size_t max_children = 100000;
 
-    const float prev_sum = prev.sum.load();
+    const Float prev_sum = Float(prev.sum);
     while (!stack.empty()) {
         const StackItem s = stack.top();
         stack.pop();
@@ -118,8 +120,9 @@ void PathGuide::DTreeWrapper::reset(const size_t max_depth, const float rho) {
         check(s.other_idx < s.tree->nodes.size());
         const DirTree::DirNode &other_node = s.tree->nodes[s.other_idx];
         for (size_t quad = 0; quad < other_node.data.size(); quad++) {
-            const float quad_sum = other_node.data[quad].load();
-            if (s.depth < max_depth && quad_sum > prev_sum * rho) {
+            const Float quad_sum = Float(other_node.data[quad]);
+            if (s.depth < max_depth &&
+                dr::any_or<true>(quad_sum > prev_sum * rho)) {
                 // add child and check if parent
                 const size_t child_idx =
                     current.nodes.size(); // new child's index!
@@ -171,11 +174,12 @@ void PathGuide::DTreeWrapper::build() {
                     // to prev
 }
 
-float PathGuide::DTreeWrapper::sample_pdf(const Vec3f &dir) const {
+Float PathGuide::DTreeWrapper::sample_pdf(const Vec3f &dir) const {
     const auto &tree = prev;
 
-    float pdf = 1.f / (4.f * dr::Pi<float>); // default naive pdf (unit sphere)
-    if (tree.nodes.size() == 0 || tree.num_samples == 0 || tree.sum == 0.f)
+    Float pdf = 1.f / (4.f * dr::Pi<Float>); // default naive pdf (unit sphere)
+    if (tree.nodes.size() == 0 || tree.num_samples.load() == 0 ||
+        dr::any_or<true>(Float(tree.sum) == 0.f))
         return pdf;
 
     // begin recursing into nodes
@@ -188,8 +192,8 @@ float PathGuide::DTreeWrapper::sample_pdf(const Vec3f &dir) const {
         const size_t quad_idx = Angles2Quadrant(pos);
         pos                   = NormalizeForQuad(pos, quad_idx);
 
-        const float quad_samples = node->data[quad_idx].load();
-        if (quad_samples <= 0.f)
+        const Float quad_samples = Float(node->data[quad_idx]);
+        if (dr::any_or<true>(quad_samples <= 0.f))
             return 0.f; // invalid pdf
 
         // distribute this mean evenly for all "quads"
@@ -207,14 +211,14 @@ float PathGuide::DTreeWrapper::sample_pdf(const Vec3f &dir) const {
 }
 
 bool PathGuide::DTreeWrapper::DirTree::DirNode::sample(size_t &quadrant) const {
-    const float top_left  = data[0].load();
-    const float top_right = data[1].load();
-    const float bot_left  = data[2].load();
-    const float bot_right = data[3].load();
-    const float total     = top_left + top_right + bot_left + bot_right;
+    const Float top_left  = Float(data[0]);
+    const Float top_right = Float(data[1]);
+    const Float bot_left  = Float(data[2]);
+    const Float bot_right = Float(data[3]);
+    const Float total     = top_left + top_right + bot_left + bot_right;
 
     // just use unit random
-    if (total == 0.f)
+    if (dr::any_or<true>(total == 0.f))
         return false;
 
     // NOTE: quadrants are indexed like this
@@ -228,20 +232,21 @@ bool PathGuide::DTreeWrapper::DirTree::DirNode::sample(size_t &quadrant) const {
     // can probably do something smarter, see
     // https://www.keithschwarz.com/darts-dice-coins/
 
-    const float sample = randf();
-    if (sample < top_left / total) // dice rolls top left
+    const Float sample = randf();
+    if (dr::any_or<true>(sample < top_left / total)) // dice rolls top left
     {
         quadrant = 0;
-    } else if (sample < (top_left + top_right) / total) // dice rolls top right
+    } else if (dr::any_or<true>(sample < (top_left + top_right) /
+                                             total)) // dice rolls top right
     {
         quadrant = 1;
-    } else if (sample < (top_left + top_right + bot_left) /
-                            total) // dice rolls bottom left
+    } else if (dr::any_or<true>((sample < (top_left + top_right + bot_left) /
+                                              total))) // dice rolls bottom left
     {
         quadrant = 2;
     } else // dice rolls bottom right
     {
-        check(sample <= 1.f);
+        check(dr::any_or<true>(sample <= 1.f));
         quadrant = 3;
     }
     check(quadrant <= 3); // 0, 1, 2, or 3
@@ -259,7 +264,8 @@ Vec3f PathGuide::DTreeWrapper::sample_dir() const {
     const auto &tree = prev;
 
     // early out to indicate that this tree is invalid
-    if (tree.nodes.size() == 0 || tree.num_samples == 0 || tree.sum == 0.f)
+    if (tree.nodes.size() == 0 || tree.num_samples.load() == 0 ||
+        dr::any_or<true>(Float(tree.sum) == 0.f))
         return Angles2Euler(unit_random);
 
     // recurse into the tree
@@ -317,7 +323,7 @@ void PathGuide::SpatialTree::begin_next_tree_iteration() {
             node.dTree.build();
 }
 
-void PathGuide::SpatialTree::reset_leaves(size_t max_depth, float rho) {
+void PathGuide::SpatialTree::reset_leaves(size_t max_depth, Float rho) {
     for (auto &node : nodes)
         if (node.bIsLeaf())
             node.dTree.reset(max_depth, rho);
@@ -376,7 +382,7 @@ void PathGuide::SpatialTree::subdivide(const size_t idx) {
 }
 
 const PathGuide::DTreeWrapper &
-PathGuide::SpatialTree::get_direction_tree(const Vec3f &pos) const {
+PathGuide::SpatialTree::get_direction_tree(const Point3f &pos) const {
     // find the leaf node that contains this position
 
     // use a position normalized [0 -> 1]^3 within this dTree's bbox
@@ -390,8 +396,8 @@ PathGuide::SpatialTree::get_direction_tree(const Vec3f &pos) const {
         const auto ax = node(idx).xyz_axis;
         check(ax <= 2); // x, y, z
 
-        size_t child_idx = 0; // assume going to child 0
-        if (x[ax] > split)    // actually going to child 1
+        size_t child_idx = 0;                // assume going to child 0
+        if (dr::any_or<true>(x[ax] > split)) // actually going to child 1
         {
             child_idx = 1;
             x[ax] -= split; // (0.5,1) -> (0,0.5)
@@ -426,24 +432,24 @@ void PathGuide::refine_and_reset() {
     num_reset_iters++;
     // next iter should have sqrt(2^n) times the threshold
     size_t thresh =
-        std::pow(2.f, (num_reset_iters + 2) * 0.5f) * spatial_tree_thresh;
+        dr::pow(2.f, (num_reset_iters + 2) * 0.5f) * spatial_tree_thresh;
     this->refine_and_reset(thresh);
     // ready for sampling if enough iterations have been met
     sample_ready = (num_reset_iters >= num_refinements_necessary);
 }
 
-void PathGuide::add_radiance(const Vec3f &pos, const Vec3f &dir,
-                             const Color<float> &radiance) {
+void PathGuide::add_radiance(const Point3f &pos, const Vec3f &dir,
+                             const Color3f &radiance) const {
     this->add_radiance(pos, dir, luminance(radiance)); // convert to luminance
 }
 
-void PathGuide::add_radiance(const Vec3f &pos, const Vec3f &dir,
-                             const float luminance) {
-    DTreeWrapper &dir_tree = spatial_tree.get_direction_tree(pos);
-    dir_tree.add_sample(dir, luminance);
+void PathGuide::add_radiance(const Point3f &pos, const Vec3f &dir,
+                             const Float luminance) const {
+    const DTreeWrapper &dir_tree = spatial_tree.get_direction_tree(pos);
+    const_cast<DTreeWrapper &>(dir_tree).add_sample(dir, luminance);
 }
 
-Vec3f PathGuide::sample_dir(const Vec3f &pos, float &pdf) const {
+Vec3f PathGuide::sample_dir(const Vec3f &pos, Float &pdf) const {
     // O(log(n)) search through cartesian space to get the direction dTree at
     // pos
     const DTreeWrapper &dir_tree = spatial_tree.get_direction_tree(pos);
