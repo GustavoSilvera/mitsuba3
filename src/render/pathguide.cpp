@@ -144,9 +144,11 @@ void PathGuide::DTreeWrapper::reset(const size_t max_depth, const float rho) {
                 new_node.data_fill(quad_sum / 4.f);
 
                 if (current.nodes.size() > max_children) {
-                    std::cout << "PathGuide::DTreeWrapper reset hit max "
-                                 "children count!"
-                              << std::endl;
+                    std::ostringstream oss;
+                    oss << "PathGuide::DTreeWrapper reset hit max "
+                           "children count!"
+                        << std::endl;
+                    Log(Error, "%s", oss.str());
                     stack = std::stack<StackItem>(); // reset, break from loop
                     break;
                 }
@@ -405,8 +407,10 @@ PathGuide::SpatialTree::get_direction_tree(const Vec3f &pos) const {
 
 void PathGuide::initialize(const ScalarBoundingBox3f &bbox,
                            const size_t num_iters) {
-    std::cout << "initialized path guide with bounds: " << bbox.min << " -> "
-              << bbox.max << std::endl;
+    std::ostringstream oss;
+    oss << "initialized path guide with bounds: " << bbox.min << " -> "
+        << bbox.max << std::endl;
+    Log(Info, "%s", oss.str());
     num_refinements_necessary = num_iters;
     spatial_tree.set_bounds(bbox);
     refine_and_reset(spatial_tree_thresh); // initial refinement/reset
