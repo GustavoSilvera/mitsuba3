@@ -10,8 +10,8 @@ NAMESPACE_BEGIN(mitsuba)
 
 // utility method to go from Vec3f (roll, pitch, yaw) -> Vec2f (theta, phi)
 static Vec2f Euler2Angles(const Vec3f &dir) {
-    const float cosTheta = std::min(std::max(dir.z, -1.0f), 1.0f);
-    float phi            = std::atan2(dir.y, dir.x);
+    const float cosTheta = std::min(std::max(dir.z(), -1.0f), 1.0f);
+    float phi            = std::atan2(dir.y(), dir.x());
     while (phi < 0.f) {
         phi += 2.f * dr::Pi<float>;
     }
@@ -21,41 +21,43 @@ static Vec2f Euler2Angles(const Vec3f &dir) {
 
 // utility method to go from Vec2f (theta, phi) -> Vec3f (roll, pitch, yaw)
 static Vec3f Angles2Euler(const Vec2f &pos) {
-    const float cosTheta = 2.f * pos.x - 1.f;
-    const float phi      = 2.f * dr::Pi<float> * pos.y;
+    const float cosTheta = 2.f * pos.x() - 1.f;
+    const float phi      = 2.f * dr::Pi<float> * pos.y();
     const float sinTheta = std::sqrt(1.f - cosTheta * cosTheta);
     return Vec3f(sinTheta * std::cos(phi), sinTheta * std::sin(phi), cosTheta);
 }
 
 static size_t Angles2Quadrant(const Vec2f &pos) {
     // takes the 2D location input and returns the corresponding quadrant
-    check(pos.x >= 0.0f && pos.x <= 1.0f && pos.y >= 0.0f && pos.y <= 1.0f);
+    check(pos.x() >= 0.0f && pos.x() <= 1.0f && pos.y() >= 0.0f &&
+          pos.y() <= 1.0f);
 
-    if (pos.x < 0.5f && pos.y < 0.5f) // top left (quadrant 0)
+    if (pos.x() < 0.5f && pos.y() < 0.5f) // top left (quadrant 0)
         return 0;
-    else if (pos.y < 0.5f) // must be top right (quadrant 1)
+    else if (pos.y() < 0.5f) // must be top right (quadrant 1)
         return 1;
-    else if (pos.x < 0.5f) // must be bottom left (quadrant 2)
+    else if (pos.x() < 0.5f) // must be bottom left (quadrant 2)
         return 2;
     return 3;
 }
 
 static Vec2f NormalizeForQuad(const Vec2f &pos, const size_t quad) {
-    check(pos.x >= 0.0f && pos.x <= 1.0f && pos.y >= 0.0f && pos.y <= 1.0f);
+    check(pos.x() >= 0.0f && pos.x() <= 1.0f && pos.y() >= 0.0f &&
+          pos.y() <= 1.0f);
     check(quad <= 3);
     Vec2f ret = pos;
     if (quad == 0) // top left (quadrant 0)
     {              // do nothing! (already within [0,0.5] for both x and y)
-        check(ret.x >= 0.f && ret.x <= 0.5f);
-        check(ret.y >= 0.f && ret.y <= 0.5f);
+        check(ret.x() >= 0.f && ret.x() <= 0.5f);
+        check(ret.y() >= 0.f && ret.y() <= 0.5f);
     } else if (quad == 1)          // top right (quadrant 1)
         ret -= Vec2f{ 0.5f, 0.f }; // map (x) [0.5, 1] -> [0, 0.5]
     else if (quad == 2)            // bottom left (quadrant 2)
         ret -= Vec2f{ 0.f, 0.5f }; // map (y) [0.5, 1] -> [0, 0.5]
     else
         ret -= Vec2f{ 0.5f, 0.5f }; // map (x & y) [0.5, 1] -> [0, 0.5]
-    check(ret.x >= 0.f && ret.x <= 0.5f);
-    check(ret.y >= 0.f && ret.y <= 0.5f);
+    check(ret.x() >= 0.f && ret.x() <= 0.5f);
+    check(ret.y() >= 0.f && ret.y() <= 0.5f);
     return 2.f * ret; // map [0, 0.5] -> [0, 1]
 }
 
@@ -303,7 +305,9 @@ PathGuide::SpatialTree::SpatialTree() {
     nodes.resize(1); // allocate root node
 }
 
-void PathGuide::SpatialTree::set_bounds(const Imath::Box3f &b) { bounds = b; }
+void PathGuide::SpatialTree::set_bounds(const ScalarBoundingBox3f &b) {
+    bounds = b;
+}
 
 void PathGuide::SpatialTree::begin_next_tree_iteration() {
     for (auto &node : nodes)
@@ -374,7 +378,7 @@ PathGuide::SpatialTree::get_direction_tree(const Vec3f &pos) const {
     // find the leaf node that contains this position
 
     // use a position normalized [0 -> 1]^3 within this dTree's bbox
-    Vec3f x = (pos - bounds.min) / bounds.size();
+    Vec3f x = (pos - bounds.min) / bounds.extents();
 
     check(nodes.size() > 0); // need at least a root node!
 
@@ -399,7 +403,8 @@ PathGuide::SpatialTree::get_direction_tree(const Vec3f &pos) const {
 
 //-------------------PathGuide-------------------//
 
-void PathGuide::initialize(const Imath::Box3f &bbox, const size_t num_iters) {
+void PathGuide::initialize(const ScalarBoundingBox3f &bbox,
+                           const size_t num_iters) {
     std::cout << "initialized path guide with bounds: " << bbox.min << " -> "
               << bbox.max << std::endl;
     num_refinements_necessary = num_iters;

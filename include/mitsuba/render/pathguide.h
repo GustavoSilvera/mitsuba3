@@ -1,15 +1,18 @@
 #pragma once
 
-#include <Imath/ImathBox.h>        // Box3f
-#include <Imath/ImathVec.h>        // Vec3
+// #include <Imath/ImathVec.h>        // Vec3
+#include <mitsuba/core/bbox.h> // ScalarBoundingBox3f
+// #include <mitsuba/core/fwd.h>
 #include <mitsuba/core/spectrum.h> // Spectrum
+#include <mitsuba/core/vector.h>   // Vector
 
 #include <atomic>
 
 NAMESPACE_BEGIN(mitsuba)
 
-typedef Imath::Vec2<float> Vec2f;
-typedef Imath::Vec3<float> Vec3f;
+typedef mitsuba::Vector<float, 2> Vec2f;
+typedef mitsuba::Vector<float, 3> Vec3f;
+typedef BoundingBox<Point<float, 3>> ScalarBoundingBox3f;
 
 class PathGuide {
 private: // hyperparameters
@@ -31,7 +34,7 @@ public: // public API
     PathGuide() = default;
     bool ready_for_sampling() const { return sample_ready; }
     // begin construction of the SD-tree
-    void initialize(const Imath::Box3f &bbox, const size_t num_iters);
+    void initialize(const ScalarBoundingBox3f &bbox, const size_t num_iters);
 
     // refine spatial tree from last buffer
     void refine_and_reset();
@@ -154,7 +157,7 @@ private: // SpatialTree (whose leaves are DirectionTrees) declaration
     class SpatialTree {
     public:
         SpatialTree();
-        void set_bounds(const Imath::Box3f &bounds);
+        void set_bounds(const ScalarBoundingBox3f &bounds);
         void begin_next_tree_iteration();
         void refine(const size_t sample_threshold);
         void reset_leaves(const size_t max_depth, const float rho);
@@ -191,7 +194,7 @@ private: // SpatialTree (whose leaves are DirectionTrees) declaration
             return nodes[idx];
         }
 
-        Imath::Box3f bounds;
+        ScalarBoundingBox3f bounds;
 
         std::vector<SNode> nodes;
     };
