@@ -14,6 +14,7 @@
 #include <mitsuba/render/scene.h>
 #include <mitsuba/render/shape.h>
 #include <mitsuba/render/medium.h>
+#include <mitsuba/render/pathguide.h>
 
 NAMESPACE_BEGIN(mitsuba)
 
@@ -139,6 +140,9 @@ protected:
 
     /// Flag for disabling direct visibility of emitters
     bool m_hide_emitters;
+
+    // Path guider
+    PathGuide<Float, Spectrum> pg;
 };
 
 /** \brief Abstract integrator that performs Monte Carlo sampling starting from

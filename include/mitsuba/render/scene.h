@@ -5,7 +5,6 @@
 #include <mitsuba/render/shapegroup.h>
 #include <mitsuba/render/fwd.h>
 #include <mitsuba/render/sensor.h>
-#include <mitsuba/render/pathguide.h>
 
 NAMESPACE_BEGIN(mitsuba)
 
@@ -573,7 +572,6 @@ protected:
     ref<Integrator> m_integrator;
     ref<Emitter> m_environment;
     ScalarFloat m_emitter_pmf;
-    PathGuide pg;
 
     bool m_shapes_grad_enabled;
 };

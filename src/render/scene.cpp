@@ -61,9 +61,6 @@ MI_VARIANT Scene<Float, Spectrum>::Scene(const Properties &props) {
                 Throw("Only one integrator can be specified per scene.");
             m_integrator = integrator;
         }
-
-        // initialize path guiding
-        pg.initialize(bbox(), 6);
     }
 
     // Create sensors' shapes (environment sensors)
