@@ -263,7 +263,12 @@ public:
                     auto pg_wo = this->pg.sample(si.p, pg_pdf);
                     if (dr::any_or<true>(pg_pdf > 0.f)) {
                         ray.d = pg_wo;
-                        bsdf_sample.pdf = pg_sample_prob * pg_pdf + (1.f - pg_sample_prob) * bsdf_sample.pdf;
+                        auto [bsdf_val_pg, bsdf_pdf_pg, bsdf_sample_pg, bsdf_weight_pg]
+                            = bsdf->eval_pdf_sample(bsdf_ctx, si, ray.d, sampler->next_1d(), sampler->next_2d());
+                        // interpolate bw the original BSDF sampling and PathGuide sampling
+                        const Float pdf = pg_sample_prob * pg_pdf + (1.f - pg_sample_prob) * bsdf_pdf_pg;
+                        bsdf_weight = bsdf_val_pg / pdf;
+                        bsdf_sample = bsdf_sample_pg; // update eta (for russian roulette)
                     }
                 }
             }
