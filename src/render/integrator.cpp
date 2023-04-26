@@ -37,8 +37,6 @@ Integrator<Float, Spectrum>::render(Scene *scene,
     if (sensor_index >= scene->sensors().size())
         Throw("Scene::render(): sensor index %i is out of bounds!", sensor_index);
 
-    preprocess(scene, scene->sensors()[sensor_index].get(), seed, spp);
-
     return render(scene, scene->sensors()[sensor_index].get(),
                   seed, spp, develop, evaluate);
 }
