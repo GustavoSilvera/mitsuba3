@@ -93,6 +93,12 @@ public:
                     bool develop = true,
                     bool evaluate = true);
 
+    // perform any preprocessing necessary for the scene, such as path guiding 
+    // SD-tree refinement
+    virtual void preprocess(Scene *scene) {
+        pg.initialize(scene->bbox(), 6); // initialize path guiding
+    }
+
     /// \brief Cancel a running render job (e.g. after receiving Ctrl-C)
     virtual void cancel();
 

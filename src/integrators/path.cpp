@@ -5,6 +5,7 @@
 #include <mitsuba/render/emitter.h>
 #include <mitsuba/render/integrator.h>
 #include <mitsuba/render/records.h>
+#include <mitsuba/core/progress.h> // ProgressReporter
 
 NAMESPACE_BEGIN(mitsuba)
 
@@ -171,23 +172,6 @@ public:
                     throughput,
                     ds.emitter->eval(si, prev_bsdf_pdf > 0.f) * mis_bsdf,
                     result);
-
-                if (!this->pg.ready_for_sampling()) {
-                    // Color3f rad = spectrum_to_srgb(result, ray.wavelengths);
-                    Color3f rgb;
-                    if constexpr (is_monochromatic_v<Spectrum>) {
-                        rgb = result.x();
-                    } else if constexpr (is_rgb_v<Spectrum>) {
-                        rgb = result;
-                    } else {
-                        static_assert(is_spectral_v<Spectrum>);
-                        /// Note: this assumes that sensor used sample_rgb_spectrum() to generate 'ray.wavelengths'
-                        auto pdf = pdf_rgb_spectrum(ray.wavelengths);
-                        UnpolarizedSpectrum spec = result * dr::select(dr::neq(pdf, 0.f), dr::rcp(pdf), 0.f);
-                        rgb = spectrum_to_srgb(spec, ray.wavelengths, active);
-                    }
-                    this->pg.add_radiance(ray.o, ray.d, rgb);
-                }
             }
 
             // Continue tracing the path at this point?
@@ -331,6 +315,51 @@ public:
             return a * b + c;
         else
             return dr::fmadd(a, b, c);
+    }
+
+    virtual void preprocess(Scene *scene) override {
+        MonteCarloIntegrator<Float, Spectrum>::preprocess(scene);
+
+        ref<ProgressReporter> progress = new ProgressReporter("Building PG");
+
+        auto *sensor = scene->sensors()[0].get();
+        const Medium *medium = sensor->medium();
+        const auto resolution = sensor->film()->size();
+        Sampler *sampler = sensor->sampler();
+        sampler->seed(0);
+        const size_t total_N = std::pow(2, 6) - 1; // N=1+2+4+8+16+...+2^{N-1} = 2^N-1
+        const size_t total = resolution.x() * resolution.y() * total_N; // for entire image
+        size_t N = 1;                    // // start off with a single sample, double each iter
+        size_t samples_done = 0;
+        while (!this->pg.ready_for_sampling()) // needs enough refinements
+        {
+            for (size_t y = 0; y < resolution.y(); y++)
+            {
+                for (size_t x = 0; x < resolution.x(); x++)
+                {
+                    for (size_t i = 0; i < N; i++)
+                    {
+                        Float time = sensor->shutter_open();
+                        if (sensor->shutter_open_time() > 0.f)
+                            time += sampler->next_1d() * sensor->shutter_open_time();
+                        Float wavelength_sample = 0.f;
+                        if constexpr (is_spectral_v<Spectrum>)
+                            wavelength_sample = sampler->next_1d();
+                        Point2f adjusted_pos = sampler->next_2d();
+                        Point2f aperature_pos = sampler->next_2d();
+                        auto [ray, ray_weight] = sensor->sample_ray_differential(
+                            time, wavelength_sample, adjusted_pos, aperature_pos);
+                        this->sample(scene, sampler, ray, medium, /*aovs*/nullptr, true);
+                        sampler->advance();
+                        samples_done++;
+                        progress->update(samples_done / (ScalarFloat)total);
+                    }
+                }
+            }
+            this->pg.refine_and_reset();
+            N *= 2;
+        }
+        Log(Info, "Pathguide construction finished");
     }
 
     MI_DECLARE_CLASS()
