@@ -236,7 +236,28 @@ public:
             ray = si.spawn_ray(si.to_world(bsdf_sample.wo));
 
             // ------------------------ Path Guiding ------------------------
-            if (!this->pg.ready_for_sampling()) {
+            if (this->pg.ready()) {
+                // flip a coin to sample between pathguiding and bsdf
+                const Float mu = 0.5f;
+                if (dr::any_or<true>(
+                        !has_flag(bsdf->flags(), BSDFFlags::DeltaReflection) &&
+                        sampler->next_1d() < mu)) {
+                    Float pg_pdf = 0.f;
+                    auto pg_wo   = this->pg.sample(si.p, pg_pdf);
+                    if (dr::any_or<true>(pg_pdf > 0.f)) {
+                        ray.d = pg_wo; // assign new outgoing dir (via pg)
+                        // don't care about bsdf_weight_pg, incorporating pg pdf
+                        auto [bsdf_val_pg, bsdf_pdf_pg, bsdf_sample_pg, _] =
+                            bsdf->eval_pdf_sample(bsdf_ctx, si, ray.d,
+                                                  sampler->next_1d(),
+                                                  sampler->next_2d());
+
+                        const Float pdf = dr::lerp(pg_pdf, bsdf_pdf_pg, mu);
+                        bsdf_weight     = bsdf_val_pg / dr::detach(pdf);
+                        bsdf_sample     = bsdf_sample_pg; // update eta (for rr)
+                    }
+                }
+            } else {
                 Color3f rgb;
                 if constexpr (is_monochromatic_v<Spectrum>) {
                     rgb = result.x();
@@ -244,33 +265,12 @@ public:
                     rgb = result;
                 } else {
                     static_assert(is_spectral_v<Spectrum>);
-                    /// Note: this assumes that sensor used sample_rgb_spectrum() to generate 'ray.wavelengths'
-                    auto pdf = pdf_rgb_spectrum(ray.wavelengths);
-                    UnpolarizedSpectrum spec = result * dr::select(dr::neq(pdf, 0.f), dr::rcp(pdf), 0.f);
-                    rgb = spectrum_to_srgb(spec, ray.wavelengths, active);
+                    auto pdf        = pdf_rgb_spectrum(ray.wavelengths);
+                    auto unpol_spec = result * dr::select(dr::neq(pdf, 0.f),
+                                                          dr::rcp(pdf), 0.f);
+                    rgb = spectrum_to_srgb(unpol_spec, ray.wavelengths, active);
                 }
                 this->pg.add_radiance(ray.o, ray.d, rgb);
-            }
-            else {
-                // sample pathguide!
-                // const bool bsdf_transmissive = dr::any_or<true>(has_flag(bsdf->flags(), BSDFFlags::Glossy));
-                const bool bsdf_delta_refl = dr::any_or<true>(has_flag(bsdf->flags(), BSDFFlags::DeltaReflection));
-                const bool bPathGuideUnfriendly = bsdf_delta_refl;
-                const Float pg_sample_prob = 0.5f;
-                bool sample_pathguide = !bPathGuideUnfriendly && dr::any_or<true>(sampler->next_1d() < pg_sample_prob);
-                if (sample_pathguide) {
-                    Float pg_pdf = 0.f;
-                    auto pg_wo = this->pg.sample(si.p, pg_pdf);
-                    if (dr::any_or<true>(pg_pdf > 0.f)) {
-                        ray.d = pg_wo;
-                        auto [bsdf_val_pg, bsdf_pdf_pg, bsdf_sample_pg, bsdf_weight_pg]
-                            = bsdf->eval_pdf_sample(bsdf_ctx, si, ray.d, sampler->next_1d(), sampler->next_2d());
-                        // interpolate bw the original BSDF sampling and PathGuide sampling
-                        const Float pdf = pg_sample_prob * pg_pdf + (1.f - pg_sample_prob) * bsdf_pdf_pg;
-                        bsdf_weight = bsdf_val_pg / pdf;
-                        bsdf_sample = bsdf_sample_pg; // update eta (for russian roulette)
-                    }
-                }
             }
 
             /* When the path tracer is differentiated, we must be careful that

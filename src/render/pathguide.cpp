@@ -437,32 +437,22 @@ PathGuide<Float, Spectrum>::SpatialTree::get_direction_tree(
 //-------------------PathGuide-------------------//
 
 MI_VARIANT void
-PathGuide<Float, Spectrum>::initialize(const ScalarBoundingBox3f &bbox,
-                                       const size_t num_iters) {
-    std::ostringstream oss;
-    oss << "initialized path guide with bounds: " << bbox.min << " -> "
-        << bbox.max << std::endl;
-    Log(Info, "%s", oss.str());
-    num_refinements_necessary = num_iters;
-    spatial_tree.set_bounds(bbox);
-    refine_and_reset(spatial_tree_thresh); // initial refinement/reset
+PathGuide<Float, Spectrum>::initialize(const ScalarBoundingBox3f &bbox) {
+    spatial_tree.bounds = bbox;
+    refine(spatial_tree_thresh); // initial refinement/reset
 }
 
 MI_VARIANT
-void PathGuide<Float, Spectrum>::refine_and_reset(const size_t thresh) {
+void PathGuide<Float, Spectrum>::refine(const size_t thresh) {
     spatial_tree.refine(thresh);
     spatial_tree.reset_leaves(max_DTree_depth, rho);
 }
 
-MI_VARIANT void PathGuide<Float, Spectrum>::refine_and_reset() {
+MI_VARIANT void PathGuide<Float, Spectrum>::refine() {
     spatial_tree.begin_next_tree_iteration(); // keep track of last trees
-    num_reset_iters++;
+    refinement_iter++;
     // next iter should have sqrt(2^n) times the threshold
-    size_t thresh =
-        dr::pow(2.f, (num_reset_iters + 2) * 0.5f) * spatial_tree_thresh;
-    this->refine_and_reset(thresh);
-    // ready for sampling if enough iterations have been met
-    sample_ready = (num_reset_iters >= num_refinements_necessary);
+    refine(dr::pow(2.f, (refinement_iter + 2) * 0.5f) * spatial_tree_thresh);
 }
 
 MI_VARIANT

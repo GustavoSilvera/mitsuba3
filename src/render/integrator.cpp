@@ -45,8 +45,8 @@ MI_VARIANT void Integrator<Float, Spectrum>::preprocess(Scene *scene,
                                                         Sensor *sensor,
                                                         uint32_t seed,
                                                         uint32_t spp) {
-    const size_t M = 6;
-    pg.initialize(scene->bbox(), M); // initialize path guiding
+    const size_t M = pg.num_refinements_needed();
+    pg.initialize(scene->bbox()); // initialize path guiding
     ref<ProgressReporter> progress = new ProgressReporter("Building PG");
     size_t N            = 1; // start off with a single sample, double each iter
     size_t samples_done = 0;
@@ -57,17 +57,18 @@ MI_VARIANT void Integrator<Float, Spectrum>::preprocess(Scene *scene,
         sensor = scene->sensors()[0].get(); // default to first sensor
     auto *sampler   = sensor->sampler();
     uint32_t og_spp = sampler->sample_count();
-    while (!pg.ready_for_sampling()) // needs enough refinements
+    while (!pg.ready()) // needs enough refinements
     {
         const auto seed_n = seed + N; // so every pass has a different seed
         const auto spp_n  = N;        // so ever pass has N many spp
         {
             // render a pass of the scene (collecting pathguide samples)
-            render(scene, sensor, seed_n, spp_n, /*develop*/ false, /*evaluate*/ false);
+            // (omit develop and evaluate since these renders are for pg)
+            render(scene, sensor, seed_n, spp_n, false, false);
         }
         samples_done++;
         progress->update(samples_done / (ScalarFloat) M);
-        pg.refine_and_reset();
+        pg.refine();
         N *= 2;
     }
     // restore the original spp if necessary

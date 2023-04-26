@@ -23,19 +23,26 @@ private: // hyperparameters
     // number of refinements until can sample
     size_t num_refinements_necessary = 6;
 
-    size_t num_reset_iters = 0;            // how many refinements have happened
-    bool sample_ready      = false;        // whether or not we can sample
-    void refine_and_reset(const size_t n); // refines the SD-tree, then prepares
-                                           // for next iteration
+    size_t refinement_iter = 0;     // how many refinements have happened
+    bool sample_ready      = false; // whether or not we can sample
+    void refine(const size_t);      // refines the SD-tree, then prepares
+                                    // for next iteration
 
 public: // public API
     PathGuide() = default;
-    bool ready_for_sampling() const { return sample_ready; }
     // begin construction of the SD-tree
-    void initialize(const ScalarBoundingBox3f &bbox, const size_t num_iters);
+    void initialize(const ScalarBoundingBox3f &bbox);
+
+    // return whether the PathGuiding is ready for sampling or needs to be built
+    bool ready() const {
+        return (refinement_iter >= num_refinements_necessary);
+    }
+
+    // return how many refinements are needed to be ready for sampling
+    size_t num_refinements_needed() const { return num_refinements_necessary; }
 
     // refine spatial tree from last buffer
-    void refine_and_reset();
+    void refine();
 
     // to keep track of radiance in the lightfield
     void add_radiance(const Point3f &pos, const Vector3f &dir,
@@ -162,7 +169,7 @@ private: // SpatialTree (whose leaves are DirectionTrees) declaration
     class SpatialTree {
     public:
         SpatialTree() { nodes.resize(1); }
-        void set_bounds(const ScalarBoundingBox3f &b) { bounds = b; }
+        ScalarBoundingBox3f bounds;
         void begin_next_tree_iteration();
         void refine(const size_t sample_threshold);
         void reset_leaves(const size_t max_depth, const Float rho);
@@ -198,8 +205,6 @@ private: // SpatialTree (whose leaves are DirectionTrees) declaration
             // check(idx < nodes.size());
             return nodes[idx];
         }
-
-        ScalarBoundingBox3f bounds;
 
         std::vector<SNode> nodes;
     };
