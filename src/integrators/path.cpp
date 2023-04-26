@@ -238,7 +238,7 @@ public:
             // ------------------------ Path Guiding ------------------------
             if (this->pg.ready()) {
                 // flip a coin to sample between pathguiding and bsdf
-                const Float mu = 0.5f;
+                const Float mu = 0.5f; // propability of sampling with pg
                 if (dr::any_or<true>(
                         !has_flag(bsdf->flags(), BSDFFlags::DeltaReflection) &&
                         sampler->next_1d() < mu)) {
@@ -252,7 +252,7 @@ public:
                                                   sampler->next_1d(),
                                                   sampler->next_2d());
 
-                        const Float pdf = dr::lerp(pg_pdf, bsdf_pdf_pg, mu);
+                        const Float pdf = dr::lerp(bsdf_pdf_pg, pg_pdf, mu);
                         bsdf_weight     = bsdf_val_pg / dr::detach(pdf);
                         bsdf_sample     = bsdf_sample_pg; // update eta (for rr)
                     }
