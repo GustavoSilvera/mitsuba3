@@ -236,6 +236,39 @@ public:
 
             ray = si.spawn_ray(si.to_world(bsdf_sample.wo));
 
+            // ------------------------ Path Guiding ------------------------
+            if (!this->pg.ready_for_sampling()) {
+                Color3f rgb;
+                if constexpr (is_monochromatic_v<Spectrum>) {
+                    rgb = result.x();
+                } else if constexpr (is_rgb_v<Spectrum>) {
+                    rgb = result;
+                } else {
+                    static_assert(is_spectral_v<Spectrum>);
+                    /// Note: this assumes that sensor used sample_rgb_spectrum() to generate 'ray.wavelengths'
+                    auto pdf = pdf_rgb_spectrum(ray.wavelengths);
+                    UnpolarizedSpectrum spec = result * dr::select(dr::neq(pdf, 0.f), dr::rcp(pdf), 0.f);
+                    rgb = spectrum_to_srgb(spec, ray.wavelengths, active);
+                }
+                this->pg.add_radiance(ray.o, ray.d, rgb);
+            }
+            else {
+                // sample pathguide!
+                // const bool bsdf_transmissive = dr::any_or<true>(has_flag(bsdf->flags(), BSDFFlags::Glossy));
+                const bool bsdf_delta_refl = dr::any_or<true>(has_flag(bsdf->flags(), BSDFFlags::DeltaReflection));
+                const bool bPathGuideUnfriendly = bsdf_delta_refl;
+                const Float pg_sample_prob = 0.5f;
+                bool sample_pathguide = !bPathGuideUnfriendly && dr::any_or<true>(sampler->next_1d() < pg_sample_prob);
+                if (sample_pathguide) {
+                    Float pg_pdf = 0.f;
+                    auto pg_wo = this->pg.sample(si.p, pg_pdf);
+                    if (dr::any_or<true>(pg_pdf > 0.f)) {
+                        ray.d = pg_wo;
+                        bsdf_sample.pdf = pg_sample_prob * pg_pdf + (1.f - pg_sample_prob) * bsdf_sample.pdf;
+                    }
+                }
+            }
+
             /* When the path tracer is differentiated, we must be careful that
                the generated Monte Carlo samples are detached (i.e. don't track
                derivatives) to avoid bias resulting from the combination of moving
