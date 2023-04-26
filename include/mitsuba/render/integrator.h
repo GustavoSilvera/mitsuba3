@@ -95,9 +95,7 @@ public:
 
     // perform any preprocessing necessary for the scene, such as path guiding 
     // SD-tree refinement
-    virtual void preprocess(Scene *scene) {
-        pg.initialize(scene->bbox(), 6); // initialize path guiding
-    }
+    virtual void preprocess(Scene *scene, Sensor *sensor = nullptr, uint32_t seed = 0, uint32_t spp = 0);
 
     /// \brief Cancel a running render job (e.g. after receiving Ctrl-C)
     virtual void cancel();

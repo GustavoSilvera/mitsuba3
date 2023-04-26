@@ -37,8 +37,46 @@ Integrator<Float, Spectrum>::render(Scene *scene,
     if (sensor_index >= scene->sensors().size())
         Throw("Scene::render(): sensor index %i is out of bounds!", sensor_index);
 
+    preprocess(scene, scene->sensors()[sensor_index].get(), seed, spp);
+
     return render(scene, scene->sensors()[sensor_index].get(),
                   seed, spp, develop, evaluate);
+}
+
+MI_VARIANT void Integrator<Float, Spectrum>::preprocess(Scene *scene,
+                                                        Sensor *sensor,
+                                                        uint32_t seed,
+                                                        uint32_t spp) {
+    const size_t M = 6;
+    pg.initialize(scene->bbox(), M); // initialize path guiding
+    ref<ProgressReporter> progress = new ProgressReporter("Building PG");
+    size_t N            = 1; // start off with a single sample, double each iter
+    size_t samples_done = 0;
+    Logger *logger      = mitsuba::Thread::thread()->logger();
+    const auto prev_log_level = logger->log_level();
+    logger->set_log_level(LogLevel::Error); // --quiet
+    if (sensor == nullptr)
+        sensor = scene->sensors()[0].get(); // default to first sensor
+    auto *sampler   = sensor->sampler();
+    uint32_t og_spp = sampler->sample_count();
+    while (!pg.ready_for_sampling()) // needs enough refinements
+    {
+        const auto seed_n = seed + N; // so every pass has a different seed
+        const auto spp_n  = N;        // so ever pass has N many spp
+        {
+            // render a pass of the scene (collecting pathguide samples)
+            render(scene, sensor, seed_n, spp_n, /*develop*/ false, /*evaluate*/ false);
+        }
+        samples_done++;
+        progress->update(samples_done / (ScalarFloat) M);
+        pg.refine_and_reset();
+        N *= 2;
+    }
+    // restore the original spp if necessary
+    if (spp == 0)
+        sampler->set_sample_count(og_spp);
+    logger->set_log_level(prev_log_level);
+    Log(Info, "Pathguide construction finished");
 }
 
 MI_VARIANT std::vector<std::string> Integrator<Float, Spectrum>::aov_names() const {
