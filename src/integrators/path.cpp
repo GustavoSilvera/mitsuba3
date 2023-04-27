@@ -275,7 +275,7 @@ public:
                                                             dr::rcp(pdf), 0.f);
                     rgb = spectrum_to_srgb(unpol_spec, ray.wavelengths, active);
                 }
-                this->pg.add_radiance(ray.o, ray.d, rgb);
+                this->pg.add_radiance(si.p, bsdf_sample.wo, rgb);
             }
 
             /* When the path tracer is differentiated, we must be careful that
