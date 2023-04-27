@@ -77,8 +77,6 @@ PathGuide<Float, Spectrum>::NormalizeForQuad(const Vector2f &pos,
     return 2.f * ret; // map [0, 0.5] -> [0, 1]
 }
 
-template <typename Float> Float randf() { return std::rand() / RAND_MAX; }
-
 //-------------------DTreeWrapper-------------------//
 
 MI_VARIANT
@@ -232,11 +230,11 @@ Float PathGuide<Float, Spectrum>::DTreeWrapper::sample_pdf(
 
 MI_VARIANT
 bool PathGuide<Float, Spectrum>::DTreeWrapper::DirTree::DirNode::sample(
-    size_t &quadrant) const {
-    const Float top_left  = Float(data[0]);
-    const Float top_right = Float(data[1]);
-    const Float bot_left  = Float(data[2]);
-    const Float bot_right = Float(data[3]);
+    size_t &quadrant, Sampler<Float, Spectrum> *sampler) const {
+    const Float top_left  = Float(data[0]); // atomic load
+    const Float top_right = Float(data[1]); // atomic load
+    const Float bot_left  = Float(data[2]); // atomic load
+    const Float bot_right = Float(data[3]); // atomic load
     const Float total     = top_left + top_right + bot_left + bot_right;
 
     // just use unit random
@@ -254,7 +252,7 @@ bool PathGuide<Float, Spectrum>::DTreeWrapper::DirTree::DirNode::sample(
     // can probably do something smarter, see
     // https://www.keithschwarz.com/darts-dice-coins/
 
-    const Float sample = randf<Float>();
+    const Float sample = sampler->next_1d();
     if (dr::any_or<true>(sample < top_left / total)) // dice rolls top left
     {
         quadrant = 0;
@@ -283,9 +281,10 @@ MI_VARIANT void PathGuide<Float, Spectrum>::DTreeWrapper::free_memory() {
 
 MI_VARIANT
 typename PathGuide<Float, Spectrum>::Vector3f
-PathGuide<Float, Spectrum>::DTreeWrapper::sample_dir() const {
-    const Vector2f unit_random{ randf<Float>(), randf<Float>() };
-    const auto &tree = prev;
+PathGuide<Float, Spectrum>::DTreeWrapper::sample_dir(
+    Sampler<Float, Spectrum> *sampler) const {
+    const Vector2f unit_random = sampler->next_2d();
+    const auto &tree           = prev;
 
     // early out to indicate that this tree is invalid
     if (tree.nodes.size() == 0 || tree.num_samples.load() == 0 ||
@@ -302,7 +301,7 @@ PathGuide<Float, Spectrum>::DTreeWrapper::sample_dir() const {
     while (true) {
         check(node != nullptr);
 
-        if (!node->sample(which_quadrant)) // invalid!
+        if (!node->sample(which_quadrant, sampler)) // invalid!
             return Angles2Euler(unit_random);
         check(which_quadrant <= 3);
 
@@ -472,13 +471,14 @@ void PathGuide<Float, Spectrum>::add_radiance(const Point3f &pos,
 
 MI_VARIANT
 typename PathGuide<Float, Spectrum>::Vector3f
-PathGuide<Float, Spectrum>::sample(const Vector3f &pos, Float &pdf) const {
+PathGuide<Float, Spectrum>::sample(const Vector3f &pos, Float &pdf,
+                                   Sampler<Float, Spectrum> *sampler) const {
     // O(log(n)) search through cartesian space to get the direction dTree at
     // pos
     const DTreeWrapper &dir_tree = spatial_tree.get_direction_tree(pos);
     // O(log(n)) search through directional coordinates to sample direction and
     // pdf
-    const Vector3f ret = dir_tree.sample_dir();
+    const Vector3f ret = dir_tree.sample_dir(sampler);
     pdf                = dir_tree.sample_pdf(ret);
     return ret;
 }

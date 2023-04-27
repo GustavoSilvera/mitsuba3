@@ -1,10 +1,11 @@
 #pragma once
 
-#include <mitsuba/core/atomic.h>   // AtomicFloat
-#include <mitsuba/core/bbox.h>     // ScalarBoundingBox3f
-#include <mitsuba/core/fwd.h>      // MI_IMPORT_CORE_TYPES_PREFIX
-#include <mitsuba/core/spectrum.h> // Spectrum
-#include <mitsuba/core/vector.h>   // Vector
+#include <mitsuba/core/atomic.h>    // AtomicFloat
+#include <mitsuba/core/bbox.h>      // ScalarBoundingBox3f
+#include <mitsuba/core/fwd.h>       // MI_IMPORT_CORE_TYPES_PREFIX
+#include <mitsuba/core/spectrum.h>  // Spectrum
+#include <mitsuba/core/vector.h>    // Vector
+#include <mitsuba/render/sampler.h> // Sampler
 
 NAMESPACE_BEGIN(mitsuba)
 
@@ -50,7 +51,8 @@ public: // public API
                       const Float luminance) const;
 
     // to (importance) sample a direction and its corresponding pdf
-    Vector3f sample(const Vector3f &pos, Float &pdf) const;
+    Vector3f sample(const Vector3f &pos, Float &pdf,
+                    Sampler<Float, Spectrum> *sampler) const;
 
 public:
     // utility methods
@@ -72,7 +74,7 @@ private: // DirectionTree (and friends) declaration
         }
 
         Float sample_pdf(const Vector3f &dir) const;
-        Vector3f sample_dir() const;
+        Vector3f sample_dir(Sampler<Float, Spectrum> *sampler) const;
 
         void add_sample(const Vector3f &dir, const Float lum);
 
@@ -97,7 +99,8 @@ private: // DirectionTree (and friends) declaration
                 DirNode() = default;
                 std::array<AtomicFloat<Float>, 4> data;
                 std::array<size_t, 4> children{};
-                bool sample(size_t &quadrant) const;
+                bool sample(size_t &quadrant,
+                            Sampler<Float, Spectrum> *sampler) const;
                 bool bIsLeaf(size_t idx) const { return children[idx] == 0; }
                 Float sum() const {
                     Float total = 0.f;
