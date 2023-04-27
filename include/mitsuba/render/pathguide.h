@@ -1,6 +1,5 @@
 #pragma once
 
-// #include <Imath/ImathVec.h>        // Vec3
 #include <mitsuba/core/atomic.h>   // AtomicFloat
 #include <mitsuba/core/bbox.h>     // ScalarBoundingBox3f
 #include <mitsuba/core/fwd.h>      // MI_IMPORT_CORE_TYPES_PREFIX

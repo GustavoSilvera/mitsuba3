@@ -244,18 +244,21 @@ public:
                         sampler->next_1d() < mu)) {
                     Float pg_pdf = 0.f;
                     auto pg_wo   = this->pg.sample(si.p, pg_pdf);
-                    if (dr::any_or<true>(pg_pdf > 0.f)) {
-                        ray.d = pg_wo; // assign new outgoing dir (via pg)
-                        // don't care about bsdf_weight_pg, incorporating pg pdf
-                        auto [bsdf_val_pg, bsdf_pdf_pg, bsdf_sample_pg, _] =
-                            bsdf->eval_pdf_sample(bsdf_ctx, si, ray.d,
-                                                  sampler->next_1d(),
-                                                  sampler->next_2d());
 
-                        const Float pdf = dr::lerp(bsdf_pdf_pg, pg_pdf, mu);
-                        bsdf_weight     = bsdf_val_pg / dr::detach(pdf);
-                        bsdf_sample     = bsdf_sample_pg; // update eta (for rr)
-                    }
+                    // assign new outgoing dir (via pg)
+                    ray.d = pg_wo;
+                    // don't care about bsdf_weight_pg, incorporating pg pdf
+                    auto [bsdf_val_pg, bsdf_pdf_pg, bsdf_sample_pg, _] =
+                        bsdf->eval_pdf_sample(bsdf_ctx, si, ray.d,
+                                              sampler->next_1d(),
+                                              sampler->next_2d());
+
+                    const Float pdf_mis = dr::lerp(bsdf_pdf_pg, pg_pdf, mu);
+                    bool valid_pdf      = dr::any_or<true>(pdf_mis > 0.f);
+                    // scale the attenuation by combined pdf (cancel bsdf_pdf)
+                    const Float pdf = valid_pdf ? bsdf_pdf_pg / pdf_mis : 1.f;
+                    bsdf_weight     = bsdf_val_pg * pdf;
+                    bsdf_sample     = bsdf_sample_pg; // update eta (for rr)
                 }
             } else {
                 Color3f rgb;
