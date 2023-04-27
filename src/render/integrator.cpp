@@ -45,6 +45,8 @@ MI_VARIANT void Integrator<Float, Spectrum>::preprocess(Scene *scene,
                                                         Sensor *sensor,
                                                         uint32_t seed,
                                                         uint32_t spp) {
+    if (!pg.enabled())
+        return;
     const size_t M = pg.num_refinements_needed();
     pg.initialize(scene->bbox()); // initialize path guiding
     ref<ProgressReporter> progress = new ProgressReporter("Building PG");

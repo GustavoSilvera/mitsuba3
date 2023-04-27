@@ -23,6 +23,8 @@ private: // hyperparameters
     // number of refinements until can sample
     size_t num_refinements_necessary = 6;
 
+    const bool bIsEnabled = true;
+
     size_t refinement_iter = 0;     // how many refinements have happened
     bool sample_ready      = false; // whether or not we can sample
     void refine(const size_t);      // refines the SD-tree, then prepares
@@ -32,6 +34,8 @@ public: // public API
     PathGuide() = default;
     // begin construction of the SD-tree
     void initialize(const ScalarBoundingBox3f &bbox);
+
+    bool enabled() const { return bIsEnabled; }
 
     // return whether the PathGuiding is ready for sampling or needs to be built
     bool ready() const {

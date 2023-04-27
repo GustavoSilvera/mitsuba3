@@ -236,9 +236,9 @@ public:
             ray = si.spawn_ray(si.to_world(bsdf_sample.wo));
 
             // ------------------------ Path Guiding ------------------------
-            if (this->pg.ready()) {
+            if (this->pg.enabled() && this->pg.ready()) {
                 // flip a coin to sample between pathguiding and bsdf
-                const Float mu = 0.5f; // propability of sampling with pg
+                const Float mu = 0.5f; // probability of sampling with pg
                 if (dr::any_or<true>(
                         !has_flag(bsdf->flags(), BSDFFlags::DeltaReflection) &&
                         sampler->next_1d() < mu)) {
@@ -246,14 +246,13 @@ public:
                     auto pg_wo   = this->pg.sample(si.p, pg_pdf, sampler);
 
                     if (dr::any_or<true>(pg_pdf > 0.f)) { // valid pg sample
-                        // don't care about bsdf_weight_pg, incorporating pg pdf
+                        // evaluate the bsdf with the pathguide recommended sample
                         auto [bsdf_val_pg, bsdf_pdf_pg] =
                             bsdf->eval_pdf(bsdf_ctx, si, pg_wo);
                         const Float pdf_mis = dr::lerp(bsdf_pdf_pg, pg_pdf, mu);
-                        if (dr::any_or<true>(bsdf_pdf_pg) > 0.f) {
+                        if (dr::any_or<true>(bsdf_pdf_pg > 0.f)) {
                             // both the pathguide PDF and bsdf pdf are valid!
-                            // assign new outgoing dir (via pg)
-                            ray.d = pg_wo;
+                            ray.d = pg_wo; // assign new outgoing dir (via pg)
                             // scale the attenuation by mis_pdf (cancel bsdf_pdf)
                             bsdf_weight     = bsdf_val_pg * bsdf_pdf_pg / pdf_mis;
                             bsdf_sample.pdf = pdf_mis;
