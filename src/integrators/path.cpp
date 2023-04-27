@@ -243,34 +243,37 @@ public:
                         !has_flag(bsdf->flags(), BSDFFlags::DeltaReflection) &&
                         sampler->next_1d() < mu)) {
                     Float pg_pdf = 0.f;
-                    auto pg_wo   = this->pg.sample(si.p, pg_pdf);
+                    auto pg_wo   = this->pg.sample(si.p, pg_pdf, sampler);
 
-                    // assign new outgoing dir (via pg)
-                    ray.d = pg_wo;
-                    // don't care about bsdf_weight_pg, incorporating pg pdf
-                    auto [bsdf_val_pg, bsdf_pdf_pg, bsdf_sample_pg, _] =
-                        bsdf->eval_pdf_sample(bsdf_ctx, si, ray.d,
-                                              sampler->next_1d(),
-                                              sampler->next_2d());
-
-                    const Float pdf_mis = dr::lerp(bsdf_pdf_pg, pg_pdf, mu);
-                    bool valid_pdf      = dr::any_or<true>(pdf_mis > 0.f);
-                    // scale the attenuation by combined pdf (cancel bsdf_pdf)
-                    const Float pdf = valid_pdf ? bsdf_pdf_pg / pdf_mis : 1.f;
-                    bsdf_weight     = bsdf_val_pg * pdf;
-                    bsdf_sample     = bsdf_sample_pg; // update eta (for rr)
+                    if (dr::any_or<true>(pg_pdf > 0.f)) { // valid pg sample
+                        // don't care about bsdf_weight_pg, incorporating pg pdf
+                        auto [bsdf_val_pg, bsdf_pdf_pg] =
+                            bsdf->eval_pdf(bsdf_ctx, si, pg_wo);
+                        const Float pdf_mis = dr::lerp(bsdf_pdf_pg, pg_pdf, mu);
+                        if (dr::any_or<true>(bsdf_pdf_pg) > 0.f) {
+                            // both the pathguide PDF and bsdf pdf are valid!
+                            // assign new outgoing dir (via pg)
+                            ray.d = pg_wo;
+                            // scale the attenuation by mis_pdf (cancel bsdf_pdf)
+                            bsdf_weight     = bsdf_val_pg * bsdf_pdf_pg / pdf_mis;
+                            bsdf_sample.pdf = pdf_mis;
+                            bsdf_sample.wo  = pg_wo;
+                        }
+                    }
                 }
             } else {
+                // add indirect lighting, o/w pathguide strongly prefers direct
+                const Spectrum &indirect = bsdf_weight;
                 Color3f rgb;
                 if constexpr (is_monochromatic_v<Spectrum>) {
-                    rgb = result.x();
+                    rgb = indirect.x();
                 } else if constexpr (is_rgb_v<Spectrum>) {
-                    rgb = result;
+                    rgb = indirect;
                 } else {
                     static_assert(is_spectral_v<Spectrum>);
                     auto pdf        = pdf_rgb_spectrum(ray.wavelengths);
-                    auto unpol_spec = result * dr::select(dr::neq(pdf, 0.f),
-                                                          dr::rcp(pdf), 0.f);
+                    auto unpol_spec = indirect * dr::select(dr::neq(pdf, 0.f),
+                                                            dr::rcp(pdf), 0.f);
                     rgb = spectrum_to_srgb(unpol_spec, ray.wavelengths, active);
                 }
                 this->pg.add_radiance(ray.o, ray.d, rgb);
