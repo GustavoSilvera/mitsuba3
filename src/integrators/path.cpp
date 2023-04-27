@@ -215,6 +215,51 @@ public:
             auto [bsdf_val, bsdf_pdf, bsdf_sample, bsdf_weight]
                 = bsdf->eval_pdf_sample(bsdf_ctx, si, wo, sample_1, sample_2);
 
+            // ------------------------ Path Guiding ------------------------
+            if (this->pg.enabled() && this->pg.ready()) {
+                // flip a coin to sample between pathguiding and bsdf
+                const Float mu = 0.5f; // probability of sampling with pg
+                if (dr::any_or<true>(
+                        !has_flag(bsdf->flags(), BSDFFlags::DeltaReflection) &&
+                        sampler->next_1d() < mu)) {
+                    Float pg_pdf = 0.f;
+                    auto pg_wo   = this->pg.sample(si.p, pg_pdf, sampler);
+
+                    if (dr::any_or<true>(pg_pdf > 0.f)) { // valid pg sample
+                        // evaluate the bsdf with the pathguide recommended sample
+                        auto [bsdf_val_pg, bsdf_pdf_pg] =
+                            bsdf->eval_pdf(bsdf_ctx, si, pg_wo);
+                        const Float pdf_mis = dr::lerp(bsdf_pdf_pg, pg_pdf, mu);
+                        if (dr::any_or<true>(bsdf_pdf_pg > 0.f)) {
+                            // both the pathguide PDF and bsdf pdf are valid!
+                            // scale the attenuation by mis_pdf (cancel bsdf_pdf)
+                            bsdf_weight     = bsdf_val_pg / pdf_mis;
+                            bsdf_val = bsdf_val_pg;
+                            bsdf_pdf = pdf_mis;
+                            bsdf_sample.pdf = pdf_mis;
+                            bsdf_sample.wo  = pg_wo;
+                        }
+                    }
+                }
+            } else if (this->pg.enabled()) {
+                // add indirect lighting, o/w pathguide strongly prefers direct
+                const Spectrum &indirect = bsdf_weight;
+                Color3f rgb;
+                if constexpr (is_monochromatic_v<Spectrum>) {
+                    rgb = indirect.x();
+                } else if constexpr (is_rgb_v<Spectrum>) {
+                    rgb = indirect;
+                } else {
+                    static_assert(is_spectral_v<Spectrum>);
+                    auto pdf        = pdf_rgb_spectrum(ray.wavelengths);
+                    auto unpol_spec = indirect * dr::select(dr::neq(pdf, 0.f),
+                                                            dr::rcp(pdf), 0.f);
+                    rgb = spectrum_to_srgb(unpol_spec, ray.wavelengths, active);
+                }
+                this->pg.add_radiance(si.p, bsdf_sample.wo, rgb);
+            }
+
+
             // --------------- Emitter sampling contribution ----------------
 
             if (dr::any_or<true>(active_em)) {
@@ -234,49 +279,6 @@ public:
             bsdf_weight = si.to_world_mueller(bsdf_weight, -bsdf_sample.wo, si.wi);
 
             ray = si.spawn_ray(si.to_world(bsdf_sample.wo));
-
-            // ------------------------ Path Guiding ------------------------
-            if (this->pg.enabled() && this->pg.ready()) {
-                // flip a coin to sample between pathguiding and bsdf
-                const Float mu = 0.5f; // probability of sampling with pg
-                if (dr::any_or<true>(
-                        !has_flag(bsdf->flags(), BSDFFlags::DeltaReflection) &&
-                        sampler->next_1d() < mu)) {
-                    Float pg_pdf = 0.f;
-                    auto pg_wo   = this->pg.sample(si.p, pg_pdf, sampler);
-
-                    if (dr::any_or<true>(pg_pdf > 0.f)) { // valid pg sample
-                        // evaluate the bsdf with the pathguide recommended sample
-                        auto [bsdf_val_pg, bsdf_pdf_pg] =
-                            bsdf->eval_pdf(bsdf_ctx, si, pg_wo);
-                        const Float pdf_mis = dr::lerp(bsdf_pdf_pg, pg_pdf, mu);
-                        if (dr::any_or<true>(bsdf_pdf_pg > 0.f)) {
-                            // both the pathguide PDF and bsdf pdf are valid!
-                            ray.d = pg_wo; // assign new outgoing dir (via pg)
-                            // scale the attenuation by mis_pdf (cancel bsdf_pdf)
-                            bsdf_weight     = bsdf_val_pg * bsdf_pdf_pg / pdf_mis;
-                            bsdf_sample.pdf = pdf_mis;
-                            bsdf_sample.wo  = pg_wo;
-                        }
-                    }
-                }
-            } else {
-                // add indirect lighting, o/w pathguide strongly prefers direct
-                const Spectrum &indirect = bsdf_weight;
-                Color3f rgb;
-                if constexpr (is_monochromatic_v<Spectrum>) {
-                    rgb = indirect.x();
-                } else if constexpr (is_rgb_v<Spectrum>) {
-                    rgb = indirect;
-                } else {
-                    static_assert(is_spectral_v<Spectrum>);
-                    auto pdf        = pdf_rgb_spectrum(ray.wavelengths);
-                    auto unpol_spec = indirect * dr::select(dr::neq(pdf, 0.f),
-                                                            dr::rcp(pdf), 0.f);
-                    rgb = spectrum_to_srgb(unpol_spec, ray.wavelengths, active);
-                }
-                this->pg.add_radiance(si.p, bsdf_sample.wo, rgb);
-            }
 
             /* When the path tracer is differentiated, we must be careful that
                the generated Monte Carlo samples are detached (i.e. don't track
