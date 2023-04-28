@@ -316,16 +316,12 @@ public:
         }
 
         // accumulate intermediate throughputs for pathguide
-        // for (const auto &[o, d, t] : intermediate_T) {
-        for (size_t i = 0; i < intermediate_T.size(); i++) {
-            const auto &[o, d, t_i] = intermediate_T[i];
-            Spectrum throughput = t_i;
-            for (size_t j = i + 1; j < intermediate_T.size(); j++){
-                const auto &[o_j, d_j, t_j] = intermediate_T[j];
-                throughput *= t_j;
-            }
+        Spectrum thru = 1.f;
+        for (const auto &[o, i, t] : intermediate_T)
+            thru *= t; // accumulate throughput through entire path
+        for (const auto &[o, d, t] : intermediate_T) {
             // add indirect lighting, o/w pathguide strongly prefers direct
-            const Spectrum &indirect = throughput;
+            const Spectrum &indirect = thru;
             Color3f rgb;
             if constexpr (is_monochromatic_v<Spectrum>) {
                 rgb = indirect.x();
@@ -339,6 +335,7 @@ public:
                 rgb = spectrum_to_srgb(unpol_spec, ray.wavelengths, active);
             }
             this->pg.add_radiance(o, d, rgb);
+            thru /= t; // modify throughput for next bounce
         }
 
         return {
