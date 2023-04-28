@@ -261,20 +261,22 @@ public:
                         !has_flag(bsdf->flags(), BSDFFlags::DeltaReflection) &&
                         sampler->next_1d() < mu)) {
                     Float pg_pdf = 0.f;
-                    auto pg_wo   = this->pg.sample(si.p, pg_pdf, sampler);
+                    Vector3f pg_wo = si.to_local(this->pg.sample(si.p, pg_pdf, sampler));
 
                     if (dr::any_or<true>(pg_pdf > 0.f)) { // valid pg sample
-                        // evaluate the bsdf with the pathguide recommended sample
+                        // evaluate bsdf with the pathguide recommended sample
                         auto [bsdf_val_pg, bsdf_pdf_pg] =
                             bsdf->eval_pdf(bsdf_ctx, si, pg_wo);
-                        const Float pdf_mis = dr::lerp(bsdf_pdf_pg, pg_pdf, mu);
+                        const Float pdf_mix = dr::lerp(bsdf_pdf_pg, pg_pdf, mu);
                         if (dr::any_or<true>(bsdf_pdf_pg > 0.f)) {
                             // both the pathguide PDF and bsdf pdf are valid!
-                            bsdf_val = bsdf_val_pg;
-                            bsdf_pdf = pdf_mis;
-                            bsdf_sample.pdf = pdf_mis;
+                            bsdf_val        = bsdf_val_pg;
+                            bsdf_pdf        = pdf_mix;
+                            bsdf_sample.pdf = pdf_mix;
                             bsdf_sample.wo  = pg_wo;
-                            bsdf_weight = bsdf_val_pg;
+                            // include foreshortening term
+                            const Float cos_theta_o = Frame3f::cos_theta(pg_wo);
+                            bsdf_weight             = bsdf_val_pg * cos_theta_o;
                         }
                     }
                 }
