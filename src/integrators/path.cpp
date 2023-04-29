@@ -219,6 +219,55 @@ public:
             auto [bsdf_val, bsdf_pdf, bsdf_sample, bsdf_weight]
                 = bsdf->eval_pdf_sample(bsdf_ctx, si, wo, sample_1, sample_2);
 
+            if (this->pg.enabled() && this->pg.ready()) {
+
+                /// NOTES:
+                // bsdf_val, bsdf_pdf is eval(si.p, wo) of emitted bounce, so
+                // basically ignore them for pathguiding!
+
+                // if we sample a delta reflection, there is 0 probability of
+                // path guiding, so ignore
+                if (dr::any_or<true>(
+                        !has_flag(bsdf->flags(), BSDFFlags::DeltaReflection))) {
+                    // flip a coin to sample between pathguiding and bsdf
+                    const Float mu = 0.5f; // probability of sampling with pg
+                    Float pg_pdf   = 0.f;
+                    Float foreshortening;
+                    if (dr::any_or<true>(sampler->next_1d() < mu)) {
+                        // update the pathguide-recommended sample values
+                        auto pg_wo = dr::normalize(si.to_local(this->pg.sample(si.p, pg_pdf, sampler)));
+                        // evaluate bsdf with the pathguide recommended sample
+                        auto [bsdf_val_pg, bsdf_pdf_pg] =
+                            bsdf->eval_pdf(bsdf_ctx, si, pg_wo);
+                        // mix together the bsdf probability and the pg probability
+                        foreshortening = Frame3f::cos_theta(pg_wo);
+                        // foreshortening = dr::dot(si.wi, pg_wo);
+                        if (dr::any_or<true>(foreshortening > 0.f)) {
+                            Float pdf = dr::lerp(bsdf_pdf_pg, pg_pdf, mu);
+                            bsdf_weight[pdf > 0.f] = (bsdf_val_pg / pdf) * foreshortening;
+                            bsdf_sample.wo = pg_wo;
+                            bsdf_sample.pdf = pg_pdf;
+                        }
+                    } else {
+                        pg_pdf = this->pg.sample_pdf(si.p, si.to_world(bsdf_sample.wo));
+                        // just use the bsdf_sample & bsdf_weight as the bsdf terms
+
+                        // the bsdf_weight is the "BSDF value divided by the probability
+                        // (multiplied by the cosine foreshortening factor)" so we do
+                        // the opposite here
+                        foreshortening = Frame3f::cos_theta(bsdf_sample.wo);
+                        // foreshortening = dr::dot(si.wi, bsdf_sample.wo);
+                        if (dr::any_or<true>(foreshortening > 0.f)) {
+                            Spectrum bsdf_sample_val = (bsdf_weight / foreshortening) * bsdf_sample.pdf;
+                            // now we have the bsdf value, so we can use the new pdf mixture
+                            Float pdf = dr::lerp(bsdf_sample.pdf, pg_pdf, mu);
+                            bsdf_weight[pdf > 0.f] = (bsdf_sample_val / pdf) * foreshortening;
+                        }
+                    }
+
+                }
+            }
+
             // --------------- Emitter sampling contribution ----------------
 
             if (dr::any_or<true>(active_em)) {
@@ -230,7 +279,7 @@ public:
 
                 // Accumulate, being careful with polarization (see spec_fma)
                 result[active_em] = spec_fma(
-                    throughput, bsdf_val * em_weight * mis_em, result);
+                    throughput, bsdf_val * bsdf_pdf, result);
             }
 
             // ---------------------- BSDF sampling ----------------------
@@ -254,33 +303,7 @@ public:
             }
 
             // ------------------------ Path Guiding ------------------------
-            if (this->pg.enabled() && this->pg.ready()) {
-                // flip a coin to sample between pathguiding and bsdf
-                const Float mu = 0.5f; // probability of sampling with pg
-                if (dr::any_or<true>(
-                        !has_flag(bsdf->flags(), BSDFFlags::DeltaReflection) &&
-                        sampler->next_1d() < mu)) {
-                    Float pg_pdf = 0.f;
-                    Vector3f pg_wo = si.to_local(this->pg.sample(si.p, pg_pdf, sampler));
-
-                    if (dr::any_or<true>(pg_pdf > 0.f)) { // valid pg sample
-                        // evaluate bsdf with the pathguide recommended sample
-                        auto [bsdf_val_pg, bsdf_pdf_pg] =
-                            bsdf->eval_pdf(bsdf_ctx, si, pg_wo);
-                        const Float pdf_mix = dr::lerp(bsdf_pdf_pg, pg_pdf, mu);
-                        if (dr::any_or<true>(bsdf_pdf_pg > 0.f)) {
-                            // both the pathguide PDF and bsdf pdf are valid!
-                            bsdf_val        = bsdf_val_pg;
-                            bsdf_pdf        = pdf_mix;
-                            bsdf_sample.pdf = pdf_mix;
-                            bsdf_sample.wo  = pg_wo;
-                            // include foreshortening term
-                            const Float cos_theta_o = Frame3f::cos_theta(pg_wo);
-                            bsdf_weight             = bsdf_val_pg * cos_theta_o;
-                        }
-                    }
-                }
-            } else if (this->pg.enabled()) {
+            if (this->pg.enabled() && !this->pg.ready()) {
                 intermediate_T.emplace_back(ray.o, ray.d, bsdf_weight);
             }
 
@@ -315,27 +338,29 @@ public:
                      dr::neq(throughput_max, 0.f);
         }
 
-        // accumulate intermediate throughputs for pathguide
-        Spectrum thru = 1.f;
-        for (const auto &[o, i, t] : intermediate_T)
-            thru *= t; // accumulate throughput through entire path
-        for (const auto &[o, d, t] : intermediate_T) {
-            // add indirect lighting, o/w pathguide strongly prefers direct
-            const Spectrum &indirect = thru;
-            Color3f rgb;
-            if constexpr (is_monochromatic_v<Spectrum>) {
-                rgb = indirect.x();
-            } else if constexpr (is_rgb_v<Spectrum>) {
-                rgb = indirect;
-            } else {
-                static_assert(is_spectral_v<Spectrum>);
-                auto pdf        = pdf_rgb_spectrum(ray.wavelengths);
-                auto unpol_spec = indirect * dr::select(dr::neq(pdf, 0.f),
-                                                        dr::rcp(pdf), 0.f);
-                rgb = spectrum_to_srgb(unpol_spec, ray.wavelengths, active);
+        if (this->pg.enabled() && !this->pg.ready()) {
+            // accumulate intermediate throughputs for pathguide
+            Spectrum thru = 1.f;
+            for (const auto &[o, i, t] : intermediate_T)
+                thru *= t; // accumulate throughput through entire path
+            for (const auto &[o, d, t] : intermediate_T) {
+                // add indirect lighting, o/w pathguide strongly prefers direct
+                const Spectrum &indirect = thru;
+                Color3f rgb;
+                if constexpr (is_monochromatic_v<Spectrum>) {
+                    rgb = indirect.x();
+                } else if constexpr (is_rgb_v<Spectrum>) {
+                    rgb = indirect;
+                } else {
+                    static_assert(is_spectral_v<Spectrum>);
+                    auto pdf        = pdf_rgb_spectrum(ray.wavelengths);
+                    auto unpol_spec = indirect * dr::select(dr::neq(pdf, 0.f),
+                                                            dr::rcp(pdf), 0.f);
+                    rgb = spectrum_to_srgb(unpol_spec, ray.wavelengths, active);
+                }
+                this->pg.add_radiance(o, d, rgb);
+                thru /= t; // modify throughput for next bounce
             }
-            this->pg.add_radiance(o, d, rgb);
-            thru /= t; // modify throughput for next bounce
         }
 
         return {

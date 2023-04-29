@@ -57,6 +57,7 @@ public: // public API
     // to (importance) sample a direction and its corresponding pdf
     Vector3f sample(const Vector3f &pos, Float &pdf,
                     Sampler<Float, Spectrum> *sampler) const;
+    Float sample_pdf(const Point3f &pos, const Vector3f &dir) const;
 
 public:
     // utility methods

@@ -458,7 +458,10 @@ MI_VARIANT
 void PathGuide<Float, Spectrum>::add_radiance(const Point3f &pos,
                                               const Vector3f &dir,
                                               const Color3f &radiance) const {
-    this->add_radiance(pos, dir, luminance(radiance)); // convert to luminance
+    Float rad = luminance(radiance);
+    if (!dr::any_or<true>(dr::isfinite(rad)))
+        return;
+    this->add_radiance(pos, dir, rad); // convert to luminance
 }
 
 MI_VARIANT
@@ -481,6 +484,13 @@ PathGuide<Float, Spectrum>::sample(const Vector3f &pos, Float &pdf,
     const Vector3f ret = dir_tree.sample_dir(sampler);
     pdf                = dir_tree.sample_pdf(ret);
     return ret;
+}
+
+MI_VARIANT
+Float PathGuide<Float, Spectrum>::sample_pdf(const Point3f &pos,
+                                             const Vector3f &dir) const {
+    const DTreeWrapper &dir_tree = spatial_tree.get_direction_tree(pos);
+    return dir_tree.sample_pdf(dir);
 }
 
 // use this to declare the class with template instantiation while in .cpp
