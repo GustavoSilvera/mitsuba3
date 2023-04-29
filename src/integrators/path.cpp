@@ -228,24 +228,22 @@ public:
 
                 // if we sample a delta reflection, there is 0 probability of
                 // path guiding, so ignore
-                if (dr::any_or<true>(
-                        !has_flag(bsdf->flags(), BSDFFlags::DeltaReflection))) {
+                if (!dr::any_or<true>(prev_bsdf_delta)) {
                     // flip a coin to sample between pathguiding and bsdf
                     const Float mu = 0.5f; // probability of sampling with pg
                     Float pg_pdf   = 0.f;
                     Float foreshortening;
                     if (dr::any_or<true>(sampler->next_1d() < mu)) {
                         // update the pathguide-recommended sample values
-                        auto pg_wo = dr::normalize(si.to_local(this->pg.sample(si.p, pg_pdf, sampler)));
+                        auto pg_wo = si.to_local(this->pg.sample(si.p, pg_pdf, sampler));
                         // evaluate bsdf with the pathguide recommended sample
                         auto [bsdf_val_pg, bsdf_pdf_pg] =
                             bsdf->eval_pdf(bsdf_ctx, si, pg_wo);
                         // mix together the bsdf probability and the pg probability
                         foreshortening = Frame3f::cos_theta(pg_wo);
-                        // foreshortening = dr::dot(si.wi, pg_wo);
                         if (dr::any_or<true>(foreshortening > 0.f)) {
                             Float pdf = dr::lerp(bsdf_pdf_pg, pg_pdf, mu);
-                            bsdf_weight[pdf > 0.f] = (bsdf_val_pg / pdf) * foreshortening;
+                            bsdf_weight = dr::select(pdf > 0.f, (bsdf_val_pg / pdf) * foreshortening, 0);
                             bsdf_sample.wo = pg_wo;
                             bsdf_sample.pdf = pg_pdf;
                         }
@@ -257,15 +255,13 @@ public:
                         // (multiplied by the cosine foreshortening factor)" so we do
                         // the opposite here
                         foreshortening = Frame3f::cos_theta(bsdf_sample.wo);
-                        // foreshortening = dr::dot(si.wi, bsdf_sample.wo);
                         if (dr::any_or<true>(foreshortening > 0.f)) {
                             Spectrum bsdf_sample_val = (bsdf_weight / foreshortening) * bsdf_sample.pdf;
                             // now we have the bsdf value, so we can use the new pdf mixture
                             Float pdf = dr::lerp(bsdf_sample.pdf, pg_pdf, mu);
-                            bsdf_weight[pdf > 0.f] = (bsdf_sample_val / pdf) * foreshortening;
+                            bsdf_weight = dr::select(pdf > 0.f, (bsdf_sample_val / pdf) * foreshortening, 0);
                         }
                     }
-
                 }
             }
 
