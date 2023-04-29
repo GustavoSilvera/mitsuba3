@@ -276,7 +276,7 @@ public:
 
                 // Accumulate, being careful with polarization (see spec_fma)
                 result[active_em] = spec_fma(
-                    throughput, bsdf_val * bsdf_pdf, result);
+                    throughput, bsdf_val * em_weight * mis_em, result);
             }
 
             // ---------------------- BSDF sampling ----------------------
