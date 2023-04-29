@@ -121,7 +121,7 @@ public:
         BSDFContext   bsdf_ctx;
 
         // Variable for tracking intermediate radiance for path guiding
-        std::vector<std::tuple<Point3f, Vector3f, Spectrum>> intermediate_T;
+        std::vector<std::tuple<Point3f, Vector3f, Spectrum, Spectrum>> intermediate_T;
         intermediate_T.reserve(m_max_depth);
 
         /* Set up a Dr.Jit loop. This optimizes away to a normal loop in scalar
@@ -219,6 +219,7 @@ public:
             auto [bsdf_val, bsdf_pdf, bsdf_sample, bsdf_weight]
                 = bsdf->eval_pdf_sample(bsdf_ctx, si, wo, sample_1, sample_2);
 
+            // ------------------------ Path Guiding ------------------------
             if (this->pg.enabled() && this->pg.ready()) {
 
                 /// NOTES:
@@ -302,11 +303,6 @@ public:
                 bsdf_weight[bsdf_pdf_2 > 0.f] = bsdf_val_2 / dr::detach(bsdf_pdf_2);
             }
 
-            // ------------------------ Path Guiding ------------------------
-            if (this->pg.enabled() && !this->pg.ready()) {
-                intermediate_T.emplace_back(ray.o, ray.d, bsdf_weight);
-            }
-
             // ------ Update loop variables based on current interaction ------
 
             throughput *= bsdf_weight;
@@ -334,18 +330,35 @@ public:
                no-op in non-differentiable variants. */
             throughput[rr_active] *= dr::rcp(dr::detach(rr_prob));
 
+            if (this->pg.enabled() && !this->pg.ready()) {
+                /// NOTES:
+                // *result* stores the sum of all radiance up to this point. This includes 
+                // a progressively accumulated *throughput* for the path from the point to the sensor
+                // as well as summing all the direct-connections from next-event-estimation
+                // --- 
+                /// conceptually, if we think of NEE as having created V paths from each bounce
+                // (light source -> eye) then *result* stores the sum of these V paths' radiance
+                // while *throughput* only stores the immediate radiance along the path to here
+                intermediate_T.emplace_back(ray.o, ray.d, result, throughput);
+            }
+
             active = active_next && (!rr_active || rr_continue) &&
                      dr::neq(throughput_max, 0.f);
         }
 
         if (this->pg.enabled() && !this->pg.ready()) {
             // accumulate intermediate throughputs for pathguide
-            Spectrum thru = 1.f;
-            for (const auto &[o, i, t] : intermediate_T)
-                thru *= t; // accumulate throughput through entire path
-            for (const auto &[o, d, t] : intermediate_T) {
+            /// NOTE:
+            // at each bounce we track how much radiance we have seen so far, and at
+            // the end we have the total radiance (including NEE) from end to eye
+            // so we can subtract what we've seen. This will give us the sum of the
+            // remaining NEE paths until the end (from the beginning) but we want the
+            // incident radiance starting from this bounce, so we then divide by the 
+            // current throughput seen so far to cancel out those terms.
+            for (const auto &[o, d, result_so_far, thru] : intermediate_T) {
                 // add indirect lighting, o/w pathguide strongly prefers direct
-                const Spectrum &indirect = thru;
+
+                const Spectrum &indirect = (result - result_so_far) / thru;
                 Color3f rgb;
                 if constexpr (is_monochromatic_v<Spectrum>) {
                     rgb = indirect.x();
@@ -359,7 +372,6 @@ public:
                     rgb = spectrum_to_srgb(unpol_spec, ray.wavelengths, active);
                 }
                 this->pg.add_radiance(o, d, rgb);
-                thru /= t; // modify throughput for next bounce
             }
         }
 
