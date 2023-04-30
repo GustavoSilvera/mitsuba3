@@ -228,7 +228,7 @@ public:
 
                 // if we sample a delta reflection, there is 0 probability of
                 // path guiding, so ignore
-                if (!dr::any_or<true>(prev_bsdf_delta)) {
+                if (!dr::any_or<true>(has_flag(bsdf_sample.sampled_type, BSDFFlags::Delta))) {
                     // flip a coin to sample between pathguiding and bsdf
                     const Float mu = 0.5f; // probability of sampling with pg
                     Float pg_pdf   = 0.f;
@@ -245,7 +245,7 @@ public:
                             Float pdf = dr::lerp(bsdf_pdf_pg, pg_pdf, mu);
                             bsdf_weight = dr::select(pdf > 0.f, (bsdf_val_pg / pdf) * foreshortening, 0);
                             bsdf_sample.wo = pg_wo;
-                            bsdf_sample.pdf = pg_pdf;
+                            bsdf_sample.pdf = pdf;
                         }
                     } else {
                         pg_pdf = this->pg.sample_pdf(si.p, si.to_world(bsdf_sample.wo));
@@ -260,6 +260,7 @@ public:
                             // now we have the bsdf value, so we can use the new pdf mixture
                             Float pdf = dr::lerp(bsdf_sample.pdf, pg_pdf, mu);
                             bsdf_weight = dr::select(pdf > 0.f, (bsdf_sample_val / pdf) * foreshortening, 0);
+                            bsdf_sample.pdf = pdf;
                         }
                     }
                 }
