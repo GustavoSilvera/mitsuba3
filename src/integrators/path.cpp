@@ -233,14 +233,13 @@ public:
                     const Float mu = 0.5f; // probability of sampling with pg
                     Float pg_pdf   = 0.f;
                     Float bs_pdf = 0.f;
-                    Float foreshortening = 1.f;
-                    Spectrum fs_pg = 0.f, fs_bsdf = 0.f;
+                    Spectrum fs = 0.f;
                     Vector3f pg_wo;
                     if (dr::any_or<true>(sampler->next_1d() < mu)) {
                         // update the pathguide-recommended sample values
                         pg_wo = si.to_local(this->pg.sample(si.p, pg_pdf, sampler));
                         // evaluate bsdf with the pathguide recommended sample
-                        fs_pg = bsdf->eval(bsdf_ctx, si, pg_wo);
+                        fs = bsdf->eval(bsdf_ctx, si, pg_wo);
                         bs_pdf = bsdf->pdf(bsdf_ctx, si, pg_wo);
                     } else {
                         pg_wo = bsdf_sample.wo;
@@ -249,17 +248,16 @@ public:
 
                         // the bsdf_weight is the "BSDF value divided by the probability
                         // (multiplied by the cosine foreshortening factor)" so we do
-                        // the opposite here
-                        foreshortening = Frame3f::cos_theta(pg_wo);
-                        fs_bsdf = dr::select(foreshortening > 0.f, (bsdf_weight / foreshortening) * bsdf_sample.pdf, 0.f);
+                        // the opposite here (note that foreshortening cancels out)
+                        fs = bsdf_weight * bsdf_sample.pdf;
                         // now we have the bsdf value, so we can use the new pdf mixture
                         pg_pdf = this->pg.sample_pdf(si.p, si.to_world(pg_wo));
                     }
 
                     // mix together the bsdf probability and the pg probability
                     Float pdf_mix = dr::lerp(bs_pdf, pg_pdf, mu); // mixture sampling
-                    {
-                        bsdf_weight = dr::select(pdf_mix > 0, ((fs_pg + fs_bsdf) / pdf_mix) * foreshortening, 0.f);
+                    if (dr::any_or<true>(pdf_mix > 0.f)){
+                        bsdf_weight = (fs / pdf_mix);
                         bsdf_sample.wo = pg_wo;
                         bsdf_sample.pdf = pdf_mix;
                     }
@@ -372,19 +370,23 @@ public:
                 }
                 return rgb;
             };
+            bool final_found = false;
             Spectrum final_radiance = 0.f;
             for (auto r_it = intermediate_T.rbegin(); r_it != intermediate_T.rend(); r_it++) {
                 // add indirect lighting, o/w pathguide strongly prefers direct
                 const auto &[o, d, path_radiance, result_so_far, thru, woPdf] = (*r_it);
 
-                auto path_rad_rgb = to_rgb(path_radiance);
-                if (dr::any_or<true>(luminance(path_rad_rgb) > 0.f))
+                if (!final_found && dr::any_or<true>(luminance(to_rgb(path_radiance)) > 0.f))
                 {
+                    // once the latest path-radiance is computed (last non-zero path-radiance)
+                    // use this path radiance for the indirect lighting of all previous bounces
                     final_radiance = path_radiance;
+                    final_found = true;
+                    continue; // don't record radiance for this bounce (direct lighting!)
                 }
 
                 const Spectrum radiance = final_radiance / thru;
-                const Spectrum &irradiance = radiance / woPdf;
+                const Spectrum &irradiance = radiance; /// TODO
                 this->pg.add_radiance(o, d, to_rgb(irradiance));
             }
         }
