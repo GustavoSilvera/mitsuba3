@@ -121,7 +121,7 @@ public:
         BSDFContext   bsdf_ctx;
 
         // Variable for tracking intermediate radiance for path guiding
-        std::vector<std::tuple<Point3f, Vector3f, Spectrum, Spectrum>> intermediate_T;
+        std::vector<std::tuple<Point3f, Vector3f, Spectrum, Spectrum, Spectrum, Float>> intermediate_T;
         intermediate_T.reserve(m_max_depth);
 
         /* Set up a Dr.Jit loop. This optimizes away to a normal loop in scalar
@@ -136,7 +136,7 @@ public:
            lead to undefined behavior. */
         dr::Loop<Bool> loop("Path Tracer", sampler, ray, throughput, result,
                             eta, depth, valid_ray, prev_si, prev_bsdf_pdf,
-                            prev_bsdf_delta, active);
+                            prev_bsdf_delta, active, intermediate_T);
 
         /* Inform the loop about the maximum number of loop iterations.
            This accelerates wavefront-style rendering by avoiding costly
@@ -228,11 +228,11 @@ public:
 
                 // if we sample a delta reflection, there is 0 probability of
                 // path guiding, so ignore
-                if (dr::any_or<true>(bsdf_sample.pdf > 0.f && (depth != 0 && !has_flag(bsdf_sample.sampled_type, BSDFFlags::Delta)))) {
+                if (dr::any_or<true>(!has_flag(bsdf_sample.sampled_type, BSDFFlags::Delta))) {
                     // flip a coin to sample between pathguiding and bsdf
                     const Float mu = 0.5f; // probability of sampling with pg
                     Float pg_pdf   = 0.f;
-                    Float bsdf_pdf = 0.f;
+                    Float bs_pdf = 0.f;
                     Float foreshortening = 1.f;
                     Spectrum fs_pg = 0.f, fs_bsdf = 0.f;
                     Vector3f pg_wo;
@@ -241,23 +241,23 @@ public:
                         pg_wo = si.to_local(this->pg.sample(si.p, pg_pdf, sampler));
                         // evaluate bsdf with the pathguide recommended sample
                         fs_pg = bsdf->eval(bsdf_ctx, si, pg_wo);
-                        bsdf_pdf = bsdf->pdf(bsdf_ctx, si, pg_wo);
+                        bs_pdf = bsdf->pdf(bsdf_ctx, si, pg_wo);
                     } else {
                         pg_wo = bsdf_sample.wo;
-                        bsdf_pdf = bsdf_sample.pdf;
+                        bs_pdf = bsdf_sample.pdf;
                         // just use the bsdf_sample & bsdf_weight as the bsdf terms
 
                         // the bsdf_weight is the "BSDF value divided by the probability
                         // (multiplied by the cosine foreshortening factor)" so we do
                         // the opposite here
                         foreshortening = Frame3f::cos_theta(pg_wo);
-                        fs_bsdf = (bsdf_weight / foreshortening) * bsdf_sample.pdf;
+                        fs_bsdf = dr::select(foreshortening > 0.f, (bsdf_weight / foreshortening) * bsdf_sample.pdf, 0.f);
                         // now we have the bsdf value, so we can use the new pdf mixture
                         pg_pdf = this->pg.sample_pdf(si.p, si.to_world(pg_wo));
                     }
 
                     // mix together the bsdf probability and the pg probability
-                    Float pdf_mix = dr::lerp(bsdf_pdf, pg_pdf, mu); // mixture sampling
+                    Float pdf_mix = dr::lerp(bs_pdf, pg_pdf, mu); // mixture sampling
                     {
                         bsdf_weight = dr::select(pdf_mix > 0, ((fs_pg + fs_bsdf) / pdf_mix) * foreshortening, 0.f);
                         bsdf_sample.wo = pg_wo;
@@ -327,7 +327,8 @@ public:
                no-op in non-differentiable variants. */
             throughput[rr_active] *= dr::rcp(dr::detach(rr_prob));
 
-            if (this->pg.enabled() && !this->pg.ready()) {
+            if (this->pg.enabled() && !this->pg.ready() && 
+                dr::any_or<true>(prev_bsdf_pdf > 0.f && !prev_bsdf_delta)) {
                 /// NOTES:
                 // *result* stores the sum of all radiance up to this point. This includes 
                 // a progressively accumulated *throughput* for the path from the point to the sensor
@@ -336,7 +337,12 @@ public:
                 /// conceptually, if we think of NEE as having created V paths from each bounce
                 // (light source -> eye) then *result* stores the sum of these V paths' radiance
                 // while *throughput* only stores the immediate radiance along the path to here
-                intermediate_T.emplace_back(ray.o, dr::normalize(ray.d), result, throughput);
+                Spectrum path_radiance = 0.f; // how much radiance is flowing through the path ending here
+                if (intermediate_T.size() > 0) {
+                    auto &[o, d, path_rad, result_prev, thru, woPdf] = intermediate_T.back();
+                    path_radiance = result - result_prev; // delta between result (only this path!)
+                }
+                intermediate_T.emplace_back(ray.o, ray.d, path_radiance, result, throughput, bsdf_sample.pdf);
             }
 
             active = active_next && (!rr_active || rr_continue) &&
@@ -352,23 +358,34 @@ public:
             // remaining NEE paths until the end (from the beginning) but we want the
             // incident radiance starting from this bounce, so we then divide by the 
             // current throughput seen so far to cancel out those terms.
-            for (const auto &[o, d, result_so_far, thru] : intermediate_T) {
-                // add indirect lighting, o/w pathguide strongly prefers direct
-
-                const Spectrum &indirect = (result - result_so_far) / thru;
+            auto to_rgb = [&](const Spectrum &spec){
                 Color3f rgb;
                 if constexpr (is_monochromatic_v<Spectrum>) {
-                    rgb = indirect.x();
+                    rgb = spec.x();
                 } else if constexpr (is_rgb_v<Spectrum>) {
-                    rgb = indirect;
+                    rgb = spec;
                 } else {
                     static_assert(is_spectral_v<Spectrum>);
                     auto pdf        = pdf_rgb_spectrum(ray.wavelengths);
-                    auto unpol_spec = indirect * dr::select(dr::neq(pdf, 0.f),
-                                                            dr::rcp(pdf), 0.f);
+                    auto unpol_spec = spec * dr::select(dr::neq(pdf, 0.f), dr::rcp(pdf), 0.f);
                     rgb = spectrum_to_srgb(unpol_spec, ray.wavelengths, active);
                 }
-                this->pg.add_radiance(o, d, rgb);
+                return rgb;
+            };
+            Spectrum final_radiance = 0.f;
+            for (auto r_it = intermediate_T.rbegin(); r_it != intermediate_T.rend(); r_it++) {
+                // add indirect lighting, o/w pathguide strongly prefers direct
+                const auto &[o, d, path_radiance, result_so_far, thru, woPdf] = (*r_it);
+
+                auto path_rad_rgb = to_rgb(path_radiance);
+                if (dr::any_or<true>(luminance(path_rad_rgb) > 0.f))
+                {
+                    final_radiance = path_radiance;
+                }
+
+                const Spectrum radiance = final_radiance / thru;
+                const Spectrum &irradiance = radiance / woPdf;
+                this->pg.add_radiance(o, d, to_rgb(irradiance));
             }
         }
 
