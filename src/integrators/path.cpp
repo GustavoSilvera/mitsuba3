@@ -228,40 +228,40 @@ public:
 
                 // if we sample a delta reflection, there is 0 probability of
                 // path guiding, so ignore
-                if (!dr::any_or<true>(has_flag(bsdf_sample.sampled_type, BSDFFlags::Delta))) {
+                if (dr::any_or<true>(bsdf_sample.pdf > 0.f && (depth != 0 && !has_flag(bsdf_sample.sampled_type, BSDFFlags::Delta)))) {
                     // flip a coin to sample between pathguiding and bsdf
                     const Float mu = 0.5f; // probability of sampling with pg
                     Float pg_pdf   = 0.f;
-                    Float foreshortening;
+                    Float bsdf_pdf = 0.f;
+                    Float foreshortening = 1.f;
+                    Spectrum fs_pg = 0.f, fs_bsdf = 0.f;
+                    Vector3f pg_wo;
                     if (dr::any_or<true>(sampler->next_1d() < mu)) {
                         // update the pathguide-recommended sample values
-                        auto pg_wo = si.to_local(this->pg.sample(si.p, pg_pdf, sampler));
+                        pg_wo = si.to_local(this->pg.sample(si.p, pg_pdf, sampler));
                         // evaluate bsdf with the pathguide recommended sample
-                        auto [bsdf_val_pg, bsdf_pdf_pg] =
-                            bsdf->eval_pdf(bsdf_ctx, si, pg_wo);
-                        // mix together the bsdf probability and the pg probability
-                        foreshortening = Frame3f::cos_theta(pg_wo);
-                        if (dr::any_or<true>(foreshortening > 0.f)) {
-                            Float pdf = dr::lerp(bsdf_pdf_pg, pg_pdf, mu);
-                            bsdf_weight = dr::select(pdf > 0.f, (bsdf_val_pg / pdf) * foreshortening, 0);
-                            bsdf_sample.wo = pg_wo;
-                            bsdf_sample.pdf = pdf;
-                        }
+                        fs_pg = bsdf->eval(bsdf_ctx, si, pg_wo);
+                        bsdf_pdf = bsdf->pdf(bsdf_ctx, si, pg_wo);
                     } else {
-                        pg_pdf = this->pg.sample_pdf(si.p, si.to_world(bsdf_sample.wo));
+                        pg_wo = bsdf_sample.wo;
+                        bsdf_pdf = bsdf_sample.pdf;
                         // just use the bsdf_sample & bsdf_weight as the bsdf terms
 
                         // the bsdf_weight is the "BSDF value divided by the probability
                         // (multiplied by the cosine foreshortening factor)" so we do
                         // the opposite here
-                        foreshortening = Frame3f::cos_theta(bsdf_sample.wo);
-                        if (dr::any_or<true>(foreshortening > 0.f)) {
-                            Spectrum bsdf_sample_val = (bsdf_weight / foreshortening) * bsdf_sample.pdf;
-                            // now we have the bsdf value, so we can use the new pdf mixture
-                            Float pdf = dr::lerp(bsdf_sample.pdf, pg_pdf, mu);
-                            bsdf_weight = dr::select(pdf > 0.f, (bsdf_sample_val / pdf) * foreshortening, 0);
-                            bsdf_sample.pdf = pdf;
-                        }
+                        foreshortening = Frame3f::cos_theta(pg_wo);
+                        fs_bsdf = (bsdf_weight / foreshortening) * bsdf_sample.pdf;
+                        // now we have the bsdf value, so we can use the new pdf mixture
+                        pg_pdf = this->pg.sample_pdf(si.p, si.to_world(pg_wo));
+                    }
+
+                    // mix together the bsdf probability and the pg probability
+                    Float pdf_mix = dr::lerp(bsdf_pdf, pg_pdf, mu); // mixture sampling
+                    {
+                        bsdf_weight = dr::select(pdf_mix > 0, ((fs_pg + fs_bsdf) / pdf_mix) * foreshortening, 0.f);
+                        bsdf_sample.wo = pg_wo;
+                        bsdf_sample.pdf = pdf_mix;
                     }
                 }
             }
@@ -336,7 +336,7 @@ public:
                 /// conceptually, if we think of NEE as having created V paths from each bounce
                 // (light source -> eye) then *result* stores the sum of these V paths' radiance
                 // while *throughput* only stores the immediate radiance along the path to here
-                intermediate_T.emplace_back(ray.o, ray.d, result, throughput);
+                intermediate_T.emplace_back(ray.o, dr::normalize(ray.d), result, throughput);
             }
 
             active = active_next && (!rr_active || rr_continue) &&
