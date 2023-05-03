@@ -83,10 +83,11 @@ PathGuide<Float, Spectrum>::NormalizeForQuad(const Vector2f &pos,
 
 MI_VARIANT
 void PathGuide<Float, Spectrum>::DTreeWrapper::add_sample(const Vector3f &dir,
-                                                          const Float lum) {
+                                                          const Float lum,
+                                                          const Float weight) {
     auto &tree   = current;
     Vector2f pos = Euler2Angles(dir);
-    tree.num_samples++;
+    tree.weight += weight;
     tree.sum += lum;
 
     if (tree.nodes.size() == 0)
@@ -113,9 +114,9 @@ void PathGuide<Float, Spectrum>::DTreeWrapper::reset(const size_t max_depth,
     // clear and re-initialize the nodes
     current.nodes.clear();
     current.nodes.resize(1);
-    current.max_depth   = 0;
-    current.num_samples = 0;
-    current.sum         = 0.f;
+    current.max_depth = 0;
+    current.weight    = 0;
+    current.sum       = 0.f;
     struct StackItem {
         size_t node_idx;
         size_t other_idx;
@@ -198,8 +199,8 @@ Float PathGuide<Float, Spectrum>::DTreeWrapper::sample_pdf(
     const auto &tree = prev;
 
     Float pdf = 1.f / (4.f * dr::Pi<Float>); // default naive pdf (unit sphere)
-    if (tree.nodes.size() == 0 || tree.num_samples.load() == 0 ||
-        dr::any_or<true>(Float(tree.sum) == 0.f))
+    if (tree.nodes.size() == 0 ||
+        dr::any_or<true>(Float(tree.weight) == 0.f || Float(tree.sum) == 0.f))
         return pdf;
 
     // begin recursing into nodes
@@ -289,8 +290,8 @@ PathGuide<Float, Spectrum>::DTreeWrapper::sample_dir(
     const auto &tree           = prev;
 
     // early out to indicate that this tree is invalid
-    if (tree.nodes.size() == 0 || tree.num_samples.load() == 0 ||
-        dr::any_or<true>(Float(tree.sum) == 0.f))
+    if (tree.nodes.size() == 0 ||
+        dr::any_or<true>(Float(tree.weight) == 0 || Float(tree.sum) == 0.f))
         return Angles2Euler(unit_random);
 
     // recurse into the tree
@@ -352,7 +353,7 @@ void PathGuide<Float, Spectrum>::SpatialTree::reset_leaves(size_t max_depth,
 
 MI_VARIANT
 void PathGuide<Float, Spectrum>::SpatialTree::refine(
-    const size_t sample_threshold) {
+    const Float sample_threshold) {
     // traverse dTree via DFS and refine (subdivide) those leaves that qualify
     std::stack<size_t> stack;
     stack.push(0); // root node index
@@ -366,7 +367,7 @@ void PathGuide<Float, Spectrum>::SpatialTree::refine(
 
         // currently hit a leaf node, might want to subdivide it (refine)
         if (node(idx).bIsLeaf() &&
-            node(idx).dTree.get_num_samples() > sample_threshold) {
+            dr::any_or<true>(node(idx).dTree.get_weight() > sample_threshold)) {
             // splits the parent in 2, potentially creating more children
             subdivide(idx); // not thread safe!
         }
@@ -388,7 +389,7 @@ void PathGuide<Float, Spectrum>::SpatialTree::subdivide(const size_t idx) {
     /// NOTE: using node(idx) rather than taking a pointer to nodes[idx] because
     // nodes will resize (thus potentially reallocate) which might invalidate
     // any pointers or references!
-    const size_t num_samples = node(idx).dTree.get_num_samples();
+    const Float weight = node(idx).dTree.get_weight();
     nodes.resize(nodes.size() + node(idx).children.size()); // prepare for new
                                                             // children
     for (size_t i = 0; i < node(idx).children.size(); i++) {
@@ -396,7 +397,7 @@ void PathGuide<Float, Spectrum>::SpatialTree::subdivide(const size_t idx) {
         node(idx).children[i]  = child_idx; // assign the child to the parent
         SNode &child           = nodes[child_idx];
         child.dTree            = node(idx).dTree; // copy this node's dirtree
-        child.dTree.set_num_samples(num_samples / 2); // approx half the samples
+        child.dTree.set_weight(weight / 2.f);     // approx half the samples
         // "iterate through axes on every pass"
         child.xyz_axis =
             (node(idx).xyz_axis + 1) % 3; // 0 for x, 1 for y, 2 for z
@@ -408,7 +409,7 @@ void PathGuide<Float, Spectrum>::SpatialTree::subdivide(const size_t idx) {
 MI_VARIANT
 const typename PathGuide<Float, Spectrum>::DTreeWrapper &
 PathGuide<Float, Spectrum>::SpatialTree::get_direction_tree(
-    const Point3f &pos) const {
+    const Point3f &pos, Vector3f *size) const {
     // find the leaf node that contains this position
 
     // use a position normalized [0 -> 1]^3 within this dTree's bbox
@@ -429,6 +430,8 @@ PathGuide<Float, Spectrum>::SpatialTree::get_direction_tree(
             x[ax] -= split; // (0.5,1) -> (0,0.5)
         }
         x[ax] /= split; // re-normalize (0,0.5) -> (0,1)
+        if (size != nullptr)
+            (*size)[ax] /= 2.f;
         // go to next child
         idx = node(idx).children[child_idx];
     }
@@ -444,7 +447,7 @@ PathGuide<Float, Spectrum>::initialize(const ScalarBoundingBox3f &bbox) {
 }
 
 MI_VARIANT
-void PathGuide<Float, Spectrum>::refine(const size_t thresh) {
+void PathGuide<Float, Spectrum>::refine(const Float thresh) {
     spatial_tree.refine(thresh);
     spatial_tree.reset_leaves(max_DTree_depth, rho);
 }
@@ -457,23 +460,43 @@ MI_VARIANT void PathGuide<Float, Spectrum>::refine() {
 }
 
 MI_VARIANT
-void PathGuide<Float, Spectrum>::add_radiance(const Point3f &pos,
-                                              const Vector3f &dir,
-                                              const Color3f &radiance) const {
+void PathGuide<Float, Spectrum>::add_radiance(
+    const Point3f &pos, const Vector3f &dir, const Color3f &radiance,
+    Sampler<Float, Spectrum> *sampler) const {
     Float rad = luminance(radiance);
-    if (!dr::any_or<true>(dr::isfinite(rad)))
-        return;
-    this->add_radiance(pos, dir, rad); // convert to luminance
+    this->add_radiance(pos, dir, rad, sampler); // convert to luminance
 }
 
 MI_VARIANT
-void PathGuide<Float, Spectrum>::add_radiance(const Point3f &pos,
-                                              const Vector3f &dir,
-                                              const Float luminance) const {
-    // if (dr::any_or<true>(luminance <= 0.f)) // 0 luminance won't affect samples
-    //     return;
-    const DTreeWrapper &dir_tree = spatial_tree.get_direction_tree(pos);
-    const_cast<DTreeWrapper &>(dir_tree).add_sample(dir, luminance);
+void PathGuide<Float, Spectrum>::add_radiance(
+    const Point3f &pos, const Vector3f &dir, const Float luminance,
+    Sampler<Float, Spectrum> *sampler) const {
+    if (!dr::any_or<true>(dr::isfinite(luminance) || luminance <= 0.f))
+        return;
+    Point3f newPos        = pos;
+    const Float weight    = 1.f;
+    const Float pDoJitter = 0.5f; // probability of jittering the sample:
+    Vector3f size(1, 1, 1);
+    const DTreeWrapper &exact_dir_tree =
+        spatial_tree.get_direction_tree(pos, &size); // to get the size
+    if (sampler != nullptr &&
+        dr::any_or<true>(sampler->next_1d() > pDoJitter)) {
+        { // perform stochastic filtering on spatial tree
+            // jitter within bounding box of leaf node containing pos
+            Vector3f offset = size;
+            offset.x() *= sampler->next_1d() - 0.5f;
+            offset.y() *= sampler->next_1d() - 0.5f;
+            offset.z() *= sampler->next_1d() - 0.5f;
+            newPos += offset;
+            newPos = dr::minimum(newPos, spatial_tree.bounds.max);
+            newPos = dr::maximum(newPos, spatial_tree.bounds.min);
+        }
+        const DTreeWrapper &dir_tree = spatial_tree.get_direction_tree(newPos);
+        const_cast<DTreeWrapper &>(dir_tree).add_sample(dir, luminance, weight);
+    } else {
+        const_cast<DTreeWrapper &>(exact_dir_tree)
+            .add_sample(dir, luminance, weight);
+    }
 }
 
 MI_VARIANT

@@ -387,7 +387,7 @@ public:
 
                 const Spectrum radiance = final_radiance / thru;
                 const Spectrum &irradiance = radiance; /// TODO
-                this->pg.add_radiance(o, d, to_rgb(irradiance));
+                this->pg.add_radiance(o, d, to_rgb(irradiance), sampler);
             }
         }
 

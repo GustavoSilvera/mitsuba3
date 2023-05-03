@@ -15,7 +15,7 @@ public:
 
 private: // hyperparameters
     // these are the primary hyperparameters to tune the pathguiding algorithm
-    const size_t spatial_tree_thresh = 12000; // spatial tree sample threshold
+    const Float spatial_tree_thresh = 10.f; // spatial tree sample threshold
     // amount of energy from the previous tree to use for refiment
     const Float rho = 0.01f;
     // maximum number of children in leaf d-trees
@@ -27,7 +27,7 @@ private: // hyperparameters
 
     size_t refinement_iter = 0;     // how many refinements have happened
     bool sample_ready      = false; // whether or not we can sample
-    void refine(const size_t);      // refines the SD-tree, then prepares
+    void refine(const Float);       // refines the SD-tree, then prepares
                                     // for next iteration
 
 public: // public API
@@ -50,9 +50,11 @@ public: // public API
 
     // to keep track of radiance in the lightfield
     void add_radiance(const Point3f &pos, const Vector3f &dir,
-                      const Color3f &radiance) const;
+                      const Color3f &radiance,
+                      Sampler<Float, Spectrum> *sampler = nullptr) const;
     void add_radiance(const Point3f &pos, const Vector3f &dir,
-                      const Float luminance) const;
+                      const Float luminance,
+                      Sampler<Float, Spectrum> *sampler = nullptr) const;
 
     // to (importance) sample a direction and its corresponding pdf
     Vector3f sample(const Vector3f &pos, Float &pdf,
@@ -72,16 +74,19 @@ private: // DirectionTree (and friends) declaration
         void reset(size_t max_depth, Float rho);
         void build();
 
-        size_t get_num_samples() const { return current.num_samples.load(); }
+        Float get_weight() const {
+            return Float(current.weight); // atomic load
+        }
 
-        void set_num_samples(const size_t num_samples) {
-            current.num_samples.store(num_samples);
+        void set_weight(const Float weight) {
+            current.weight = weight; // atomic store
         }
 
         Float sample_pdf(const Vector3f &dir) const;
         Vector3f sample_dir(Sampler<Float, Spectrum> *sampler) const;
 
-        void add_sample(const Vector3f &dir, const Float lum);
+        void add_sample(const Vector3f &dir, const Float lum,
+                        const Float weight);
 
         // destroy all memory used by this class (danger!)
         // (probably only want this if you KNOW you aren't going to use this
@@ -92,8 +97,8 @@ private: // DirectionTree (and friends) declaration
         struct DirTree {
             DirTree() {
                 nodes.resize(1);
-                num_samples = 0;
-                sum         = 0;
+                weight = 0.f;
+                sum    = 0.f;
             }
 
             void free() {
@@ -137,8 +142,8 @@ private: // DirectionTree (and friends) declaration
                 max_depth = other.max_depth;
                 nodes     = other.nodes;
                 // assign atomics here
-                sum = Float(other.sum); // load(std::memory_order_relaxed)
-                num_samples = other.num_samples.load();
+                sum    = Float(other.sum); // load(std::memory_order_relaxed)
+                weight = Float(other.weight);
                 return *this;
             }
 
@@ -146,11 +151,11 @@ private: // DirectionTree (and friends) declaration
             DirTree(const DirTree &other)
                 : max_depth(other.max_depth), nodes(other.nodes) {
                 // assign atomics here
-                num_samples = other.num_samples.load();
-                sum = Float(other.sum); // load(std::memory_order_relaxed)
+                weight = Float(other.weight);
+                sum    = Float(other.sum); // load(std::memory_order_relaxed)
             }
 
-            std::atomic<size_t> num_samples;
+            AtomicFloat<Float> weight;
             AtomicFloat<Float> sum;
             size_t max_depth = 0;
             std::vector<DirNode> nodes;
@@ -178,17 +183,17 @@ private: // SpatialTree (whose leaves are DirectionTrees) declaration
         SpatialTree() { nodes.resize(1); }
         ScalarBoundingBox3f bounds;
         void begin_next_tree_iteration();
-        void refine(const size_t sample_threshold);
+        void refine(const Float sample_threshold);
         void reset_leaves(const size_t max_depth, const Float rho);
 
-        DTreeWrapper &get_direction_tree(const Point3f &pos) {
+        DTreeWrapper &get_direction_tree(const Point3f &pos,
+                                         Vector3f *size = nullptr) {
             return const_cast<DTreeWrapper &>(
-                const_cast<const SpatialTree *>(this)->get_direction_tree(pos));
+                const_cast<const SpatialTree *>(this)->get_direction_tree(
+                    pos, size));
         }
-        const DTreeWrapper &get_direction_tree(const Point3f &pos) const;
-        // {
-        //     return const_cast<SpatialTree *>(this)->get_direction_tree(pos);
-        // }
+        const DTreeWrapper &get_direction_tree(const Point3f &pos,
+                                               Vector3f *size = nullptr) const;
 
     private:
         struct SNode // spatial-tree-node
@@ -198,8 +203,8 @@ private: // SpatialTree (whose leaves are DirectionTrees) declaration
             uint8_t xyz_axis{}; // (0:x, 1:y, 2:z) which axis to split on
                                 // (cycles through children)
             inline bool bIsLeaf() const {
-                return children[0] ==
-                       children[1]; // equal children => no children
+                // equal children => no children
+                return children[0] == children[1];
             }
         };
 
