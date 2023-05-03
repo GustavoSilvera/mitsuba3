@@ -471,10 +471,10 @@ MI_VARIANT
 void PathGuide<Float, Spectrum>::add_radiance(
     const Point3f &pos, const Vector3f &dir, const Float luminance,
     Sampler<Float, Spectrum> *sampler) const {
-    if (!dr::any_or<true>(dr::isfinite(luminance) || luminance <= 0.f))
+    if (dr::any_or<true>(!dr::isfinite(luminance) || luminance < 0.f))
         return;
     Point3f newPos        = pos;
-    const Float weight    = 1.f;
+    const Float weight    = 0.25f;
     const Float pDoJitter = 0.5f; // probability of jittering the sample:
     Vector3f size(1, 1, 1);
     const DTreeWrapper &exact_dir_tree =

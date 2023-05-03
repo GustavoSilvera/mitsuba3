@@ -283,6 +283,17 @@ public:
             bsdf_weight = si.to_world_mueller(bsdf_weight, -bsdf_sample.wo, si.wi);
 
             ray = si.spawn_ray(si.to_world(bsdf_sample.wo));
+            if (this->pg.enabled() && this->pg.ready()) {
+                #if DEBUG
+                valid_ray=true;
+                auto rgb2spec = [](Spectrum &s, const Color3f &c){
+                    static_assert(!is_monochromatic_v<Spectrum>, "Is spectral");
+                    s[0] = c.x(); s[1] = c.y(); s[2] = c.z();
+                };
+                rgb2spec(result, dr::clamp(ray.d, 0.f, 1.f));
+                break;
+                #endif
+            }
 
             /* When the path tracer is differentiated, we must be careful that
                the generated Monte Carlo samples are detached (i.e. don't track
@@ -326,7 +337,7 @@ public:
             throughput[rr_active] *= dr::rcp(dr::detach(rr_prob));
 
             if (this->pg.enabled() && !this->pg.ready() && 
-                dr::any_or<true>(prev_bsdf_pdf > 0.f && !prev_bsdf_delta)) {
+                dr::any_or<true>(prev_bsdf_pdf > 0.f && !prev_bsdf_delta && valid_ray)) {
                 /// NOTES:
                 // *result* stores the sum of all radiance up to this point. This includes 
                 // a progressively accumulated *throughput* for the path from the point to the sensor
@@ -335,7 +346,7 @@ public:
                 /// conceptually, if we think of NEE as having created V paths from each bounce
                 // (light source -> eye) then *result* stores the sum of these V paths' radiance
                 // while *throughput* only stores the immediate radiance along the path to here
-                Spectrum path_radiance = 0.f; // how much radiance is flowing through the path ending here
+                Spectrum path_radiance = result; // how much radiance is flowing through the path ending here
                 if (intermediate_T.size() > 0) {
                     auto &[o, d, path_rad, result_prev, thru, woPdf] = intermediate_T.back();
                     path_radiance = result - result_prev; // delta between result (only this path!)
@@ -384,10 +395,8 @@ public:
                     final_found = true;
                     continue; // don't record radiance for this bounce (direct lighting!)
                 }
-
-                const Spectrum radiance = final_radiance / thru;
-                const Spectrum &irradiance = radiance; /// TODO
-                this->pg.add_radiance(o, d, to_rgb(irradiance), sampler);
+                const Spectrum radiance = (final_radiance / thru) / woPdf;
+                this->pg.add_radiance(o, d, to_rgb(radiance), sampler);
             }
         }
 
