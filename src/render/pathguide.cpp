@@ -1,3 +1,4 @@
+#include <mitsuba/core/warp.h>
 #include <mitsuba/render/pathguide.h>
 #include <stack> // std::stack
 
@@ -13,14 +14,9 @@ NAMESPACE_BEGIN(mitsuba)
 MI_VARIANT
 typename PathGuide<Float, Spectrum>::Vector2f
 PathGuide<Float, Spectrum>::Euler2Angles(const Vector3f &dir) {
-    const Float cosTheta = dr::clamp(dir.z(), -1.f, 1.f);
-    Float phi            = dr::atan2(dir.y(), dir.x());
-    while (dr::any_or<true>(phi < 0.f)) {
-        phi += 2.f * dr::Pi<float>;
-    }
-
-    return Vector2f((cosTheta + 1.f) * 0.5f,
-                    phi * 1.f / (2.f * dr::Pi<float>) );
+    // Point3f p(dir.x(), dir.y(), dir.z());
+    auto p2 = warp::uniform_sphere_to_square(dir);
+    return Vector2f(p2.x(), p2.y());
 }
 
 // utility method to go from Vector2f (theta, phi) -> Vector3f (roll, pitch,
@@ -28,17 +24,17 @@ PathGuide<Float, Spectrum>::Euler2Angles(const Vector3f &dir) {
 MI_VARIANT
 typename PathGuide<Float, Spectrum>::Vector3f
 PathGuide<Float, Spectrum>::Angles2Euler(const Vector2f &pos) {
-    const Float cosTheta = 2.f * pos.x() - 1.f;
-    const Float phi      = 2.f * dr::Pi<float> * pos.y();
-    const Float sinTheta = dr::sqrt(1.f - cosTheta * cosTheta);
-    return Vector3f(sinTheta * dr::cos(phi), sinTheta * dr::sin(phi), cosTheta);
+    Point2f p(pos.x(), pos.y());
+    return warp::square_to_uniform_sphere(p);
 }
 
 MI_VARIANT
 size_t PathGuide<Float, Spectrum>::Angles2Quadrant(const Vector2f &pos) {
     // takes the 2D location input and returns the corresponding quadrant
-    check(dr::any_or<true>(pos.x() >= 0.0f && pos.x() <= 1.0f &&
-                           pos.y() >= 0.0f && pos.y() <= 1.0f));
+    check(dr::any_or<true>(pos.x() >= -dr::Epsilon<Float> &&
+                           pos.x() <= 1.0f + dr::Epsilon<Float> &&
+                           pos.y() >= -dr::Epsilon<Float> &&
+                           pos.y() <= 1.0f + dr::Epsilon<Float>));
 
     if (dr::any_or<true>(pos.x() < 0.5f && pos.y() < 0.5f)) // top left
                                                             // (quadrant 0)
@@ -55,14 +51,18 @@ MI_VARIANT
 typename PathGuide<Float, Spectrum>::Vector2f
 PathGuide<Float, Spectrum>::NormalizeForQuad(const Vector2f &pos,
                                              const size_t quad) {
-    check(dr::any_or<true>(pos.x() >= 0.0f && pos.x() <= 1.0f &&
-                           pos.y() >= 0.0f && pos.y() <= 1.0f));
+    check(dr::any_or<true>(pos.x() >= -dr::Epsilon<Float> &&
+                           pos.x() <= 1.0f + dr::Epsilon<Float> &&
+                           pos.y() >= -dr::Epsilon<Float> &&
+                           pos.y() <= 1.0f + dr::Epsilon<Float>));
     check(quad <= 3);
     Vector2f ret = pos;
     if (quad == 0) // top left (quadrant 0)
     {              // do nothing! (already within [0,0.5] for both x and y)
-        check(dr::any_or<true>(ret.x() >= 0.f && ret.x() <= 0.5f));
-        check(dr::any_or<true>(ret.y() >= 0.f && ret.y() <= 0.5f));
+        check(dr::any_or<true>(ret.x() >= -dr::Epsilon<Float> &&
+                               ret.x() <= 0.5f + dr::Epsilon<Float>));
+        check(dr::any_or<true>(ret.y() >= -dr::Epsilon<Float> &&
+                               ret.y() <= 0.5f + dr::Epsilon<Float>));
     } else if (quad == 1)             // top right (quadrant 1)
         ret -= Vector2f{ 0.5f, 0.f }; // map (x) [0.5,
                                       // 1] -> [0, 0.5]
@@ -72,8 +72,10 @@ PathGuide<Float, Spectrum>::NormalizeForQuad(const Vector2f &pos,
     else
         ret -= Vector2f{ 0.5f, 0.5f }; // map (x & y) [0.5,
                                        // 1] -> [0, 0.5]
-    check(dr::any_or<true>(ret.x() >= 0.f && ret.x() <= 0.5f));
-    check(dr::any_or<true>(ret.y() >= 0.f && ret.y() <= 0.5f));
+    check(dr::any_or<true>(ret.x() >= -dr::Epsilon<Float> &&
+                           ret.x() <= 0.5f + dr::Epsilon<Float>));
+    check(dr::any_or<true>(ret.y() >= -dr::Epsilon<Float> &&
+                           ret.y() <= 0.5f + dr::Epsilon<Float>));
     return 2.f * ret; // map [0, 0.5] -> [0, 1]
 }
 
@@ -266,7 +268,7 @@ bool PathGuide<Float, Spectrum>::DTreeWrapper::DirTree::DirNode::sample(
         quadrant = 2;
     } else // dice rolls bottom right
     {
-        check(dr::any_or<true>(sample <= 1.f));
+        check(dr::any_or<true>(sample <= 1.f + dr::Epsilon<Float>));
         quadrant = 3;
     }
     check(quadrant <= 3); // 0, 1, 2, or 3
@@ -468,6 +470,8 @@ MI_VARIANT
 void PathGuide<Float, Spectrum>::add_radiance(const Point3f &pos,
                                               const Vector3f &dir,
                                               const Float luminance) const {
+    // if (dr::any_or<true>(luminance <= 0.f)) // 0 luminance won't affect samples
+    //     return;
     const DTreeWrapper &dir_tree = spatial_tree.get_direction_tree(pos);
     const_cast<DTreeWrapper &>(dir_tree).add_sample(dir, luminance);
 }
