@@ -31,50 +31,39 @@ PathGuide<Float, Spectrum>::Angles2Euler(const Vector2f &pos) {
 MI_VARIANT
 size_t PathGuide<Float, Spectrum>::Angles2Quadrant(const Vector2f &pos) {
     // takes the 2D location input and returns the corresponding quadrant
-    check(dr::any_or<true>(pos.x() >= -dr::Epsilon<Float> &&
-                           pos.x() <= 1.0f + dr::Epsilon<Float> &&
-                           pos.y() >= -dr::Epsilon<Float> &&
-                           pos.y() <= 1.0f + dr::Epsilon<Float>));
+    auto cpos = dr::clamp(pos, 0.f, 1.f); // within bounds
 
-    if (dr::any_or<true>(pos.x() < 0.5f && pos.y() < 0.5f)) // top left
-                                                            // (quadrant 0)
-        return 0;
-    else if (dr::any_or<true>(pos.y() < 0.5f)) // must be top right (quadrant 1)
-        return 1;
-    else if (dr::any_or<true>(pos.x() < 0.5f)) // must be bottom left (quadrant
-                                               // 2)
-        return 2;
-    return 3;
+    if (dr::any_or<true>(cpos.x() < 0.5f && cpos.y() < 0.5f)) // top left
+        return 0;                                             // (quadrant 0)
+    else if (dr::any_or<true>(cpos.y() < 0.5f)) // must be top right
+        return 1;                               // (quadrant 1)
+    else if (dr::any_or<true>(cpos.x() < 0.5f)) // must be bottom left
+        return 2;                               // (quadrant 2)
+    return 3;                                   // (quadrant 3)
 }
 
 MI_VARIANT
 typename PathGuide<Float, Spectrum>::Vector2f
 PathGuide<Float, Spectrum>::NormalizeForQuad(const Vector2f &pos,
                                              const size_t quad) {
-    check(dr::any_or<true>(pos.x() >= -dr::Epsilon<Float> &&
-                           pos.x() <= 1.0f + dr::Epsilon<Float> &&
-                           pos.y() >= -dr::Epsilon<Float> &&
-                           pos.y() <= 1.0f + dr::Epsilon<Float>));
+    Vector2f ret = dr::clamp(pos, 0.f, 1.f); // within bounds
     check(quad <= 3);
-    Vector2f ret = pos;
     if (quad == 0) // top left (quadrant 0)
     {              // do nothing! (already within [0,0.5] for both x and y)
         check(dr::any_or<true>(ret.x() >= -dr::Epsilon<Float> &&
-                               ret.x() <= 0.5f + dr::Epsilon<Float>));
-        check(dr::any_or<true>(ret.y() >= -dr::Epsilon<Float> &&
+                               ret.x() <= 0.5f + dr::Epsilon<Float> &&
+                               ret.y() >= -dr::Epsilon<Float> &&
                                ret.y() <= 0.5f + dr::Epsilon<Float>));
     } else if (quad == 1)             // top right (quadrant 1)
-        ret -= Vector2f{ 0.5f, 0.f }; // map (x) [0.5,
-                                      // 1] -> [0, 0.5]
+        ret -= Vector2f{ 0.5f, 0.f }; // map (x) [0.5, 1] -> [0, 0.5]
     else if (quad == 2)               // bottom left (quadrant 2)
-        ret -= Vector2f{ 0.f, 0.5f }; // map (y) [0.5,
-                                      // 1] -> [0, 0.5]
+        ret -= Vector2f{ 0.f, 0.5f }; // map (y) [0.5, 1] -> [0, 0.5]
     else
-        ret -= Vector2f{ 0.5f, 0.5f }; // map (x & y) [0.5,
-                                       // 1] -> [0, 0.5]
+        ret -= Vector2f{ 0.5f, 0.5f }; // map (x & y) [0.5, 1] -> [0, 0.5]
+    // ret should be within [0, 0.5]
     check(dr::any_or<true>(ret.x() >= -dr::Epsilon<Float> &&
-                           ret.x() <= 0.5f + dr::Epsilon<Float>));
-    check(dr::any_or<true>(ret.y() >= -dr::Epsilon<Float> &&
+                           ret.x() <= 0.5f + dr::Epsilon<Float> &&
+                           ret.y() >= -dr::Epsilon<Float> &&
                            ret.y() <= 0.5f + dr::Epsilon<Float>));
     return 2.f * ret; // map [0, 0.5] -> [0, 1]
 }

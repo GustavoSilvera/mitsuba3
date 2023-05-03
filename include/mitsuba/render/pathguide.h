@@ -15,7 +15,7 @@ public:
 
 private: // hyperparameters
     // these are the primary hyperparameters to tune the pathguiding algorithm
-    const Float spatial_tree_thresh = 4000.f; // spatial tree sample threshold
+    const Float spatial_tree_thresh = 1000.f; // spatial tree sample threshold
     // amount of energy from the previous tree to use for refiment
     const Float rho = 0.01f;
     // maximum number of children in leaf d-trees
