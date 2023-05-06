@@ -2,7 +2,7 @@
 ## CMU 15-468 Final Project 
 ## Gustavo Silvera, Spring 2023
 
-[Final Project Paper](TODO)
+[Final Project Paper](15_468_Final_Report.pdf)
 
 ![pathguide_im](Figure1.png)
 Image showcasing the scattering distribution of BSDF-only sampling (left), pathguide sampling (middle), and the final rendered scene (right)
