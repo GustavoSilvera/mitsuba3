@@ -9,7 +9,7 @@ Image showcasing the scattering distribution of BSDF-only sampling (left), pathg
 
 <br>
 
-![scene](barbershop-night.png)
+![scene](rendering_competition.png)
 Also just the full-quality final rendered scene.
 
 ---
