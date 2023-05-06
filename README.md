@@ -1,5 +1,18 @@
-<!-- <img src="https://github.com/mitsuba-renderer/mitsuba3/raw/master/docs/images/logo_plain.png" width="120" height="120" alt="Mitsuba logo"> -->
+# Practical Path Guiding in Mitsuba3
+## CMU 15-468 Final Project 
+## Gustavo Silvera, Spring 2023
 
+[Final Project Paper](TODO)
+
+![pathguide_im](Figure1.png)
+Image showcasing the scattering distribution of BSDF-only sampling (left), pathguide sampling (middle), and the final rendered scene (right)
+
+<br>
+
+![scene](barbershop-night.png)
+Also just the full-quality final rendered scene.
+
+---
 <img src="https://raw.githubusercontent.com/mitsuba-renderer/mitsuba-data/master/docs/images/banners/banner_01.jpg"
 alt="Mitsuba banner">
 
