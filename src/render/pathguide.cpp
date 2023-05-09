@@ -456,6 +456,49 @@ void PathGuide<Float, Spectrum>::add_radiance(
 }
 
 MI_VARIANT
+void PathGuide<Float, Spectrum>::add_radiance_from_thru(
+    const std::vector<std::tuple<Point3f, Vector3f, Spectrum, Spectrum,
+                                 Spectrum, Float>> &intermediate,
+    Sampler<Float, Spectrum> *sampler) const {
+    /// NOTE:
+    // at each bounce we track how much radiance we have seen so far,
+    // and at the end we have the total radiance (including NEE) from
+    // end to eye so we can subtract what we've seen. This will give us
+    // the sum of the remaining NEE paths until the end (from the
+    // beginning) but we want the incident radiance starting from this
+    // bounce, so we then divide by the current throughput seen so far
+    // to cancel out those terms.
+
+    auto lum = [](const Spectrum &spec) {
+        if constexpr (is_rgb_v<Spectrum>) {
+            return luminance(spec);
+        } else if constexpr (is_monochromatic_v<Spectrum>) {
+            return spec[0];
+        } else {
+            return dr::mean(spec);
+        }
+    };
+
+    bool final_found        = false;
+    Spectrum final_radiance = 0.f;
+    for (auto rev = intermediate.rbegin(); rev != intermediate.rend(); rev++) {
+        // add indirect lighting, o/w pathguide strongly prefers direct
+        const auto &[o, d, path_radiance, _, thru, woPdf] = (*rev);
+
+        if (!final_found && dr::any_or<true>(lum(path_radiance) > 0.f)) {
+            // once the latest path-radiance is computed (last non-zero
+            // path-radiance) use this path radiance for the indirect
+            // lighting of all previous bounces
+            final_radiance = path_radiance;
+            final_found    = true;
+            continue; // don't record this bounce (direct illumination)
+        }
+        const Spectrum radiance = (final_radiance / thru) / woPdf;
+        this->add_radiance(o, d, lum(radiance), sampler);
+    }
+}
+
+MI_VARIANT
 std::pair<typename PathGuide<Float, Spectrum>::Vector3f, Float>
 PathGuide<Float, Spectrum>::sample(const Vector3f &pos,
                                    Sampler<Float, Spectrum> *sampler) const {

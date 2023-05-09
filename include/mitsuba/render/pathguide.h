@@ -54,6 +54,15 @@ public: // public API
                       const Float luminance,
                       Sampler<Float, Spectrum> *sampler = nullptr) const;
 
+    // when the radiance is not computed recursively, it is nontrivial to get
+    // the incident radiance at every bounce. So this provides the means to
+    // store intermediate variables and recompute these quantities for training
+
+    void add_radiance_from_thru(
+        const std::vector<std::tuple<Point3f, Vector3f, Spectrum, Spectrum,
+                                     Spectrum, Float>> &intermediate,
+        Sampler<Float, Spectrum> *sampler) const;
+
     // to (importance) sample a direction and its corresponding pdf
     std::pair<Vector3f, Float> sample(const Vector3f &pos,
                                       Sampler<Float, Spectrum> *sampler) const;
