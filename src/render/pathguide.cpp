@@ -9,27 +9,8 @@ NAMESPACE_BEGIN(mitsuba)
         throw std::runtime_error("Assertion failed on line " +                 \
                                  std::to_string(__LINE__));
 
-// utility method to go from Vector3f (roll, pitch, yaw) -> Vector2f (theta,
-// phi)
 MI_VARIANT
-typename PathGuide<Float, Spectrum>::Vector2f
-PathGuide<Float, Spectrum>::Euler2Angles(const Vector3f &dir) {
-    // Point3f p(dir.x(), dir.y(), dir.z());
-    auto p2 = warp::uniform_sphere_to_square(dir);
-    return Vector2f(p2.x(), p2.y());
-}
-
-// utility method to go from Vector2f (theta, phi) -> Vector3f (roll, pitch,
-// yaw)
-MI_VARIANT
-typename PathGuide<Float, Spectrum>::Vector3f
-PathGuide<Float, Spectrum>::Angles2Euler(const Vector2f &pos) {
-    Point2f p(pos.x(), pos.y());
-    return warp::square_to_uniform_sphere(p);
-}
-
-MI_VARIANT
-size_t PathGuide<Float, Spectrum>::Angles2Quadrant(const Vector2f &pos) {
+size_t PathGuide<Float, Spectrum>::Angles2Quadrant(const Point2f &pos) {
     // takes the 2D location input and returns the corresponding quadrant
     auto cpos = dr::clamp(pos, 0.f, 1.f); // within bounds
 
@@ -43,10 +24,10 @@ size_t PathGuide<Float, Spectrum>::Angles2Quadrant(const Vector2f &pos) {
 }
 
 MI_VARIANT
-typename PathGuide<Float, Spectrum>::Vector2f
-PathGuide<Float, Spectrum>::NormalizeForQuad(const Vector2f &pos,
+typename PathGuide<Float, Spectrum>::Point2f
+PathGuide<Float, Spectrum>::NormalizeForQuad(const Point2f &pos,
                                              const size_t quad) {
-    Vector2f ret = dr::clamp(pos, 0.f, 1.f); // within bounds
+    Point2f ret = dr::clamp(pos, 0.f, 1.f); // within bounds
     check(quad <= 3);
     if (quad == 0) // top left (quadrant 0)
     {              // do nothing! (already within [0,0.5] for both x and y)
@@ -54,12 +35,12 @@ PathGuide<Float, Spectrum>::NormalizeForQuad(const Vector2f &pos,
                                ret.x() <= 0.5f + dr::Epsilon<Float> &&
                                ret.y() >= -dr::Epsilon<Float> &&
                                ret.y() <= 0.5f + dr::Epsilon<Float>));
-    } else if (quad == 1)             // top right (quadrant 1)
-        ret -= Vector2f{ 0.5f, 0.f }; // map (x) [0.5, 1] -> [0, 0.5]
-    else if (quad == 2)               // bottom left (quadrant 2)
-        ret -= Vector2f{ 0.f, 0.5f }; // map (y) [0.5, 1] -> [0, 0.5]
+    } else if (quad == 1)            // top right (quadrant 1)
+        ret -= Point2f{ 0.5f, 0.f }; // map (x) [0.5, 1] -> [0, 0.5]
+    else if (quad == 2)              // bottom left (quadrant 2)
+        ret -= Point2f{ 0.f, 0.5f }; // map (y) [0.5, 1] -> [0, 0.5]
     else
-        ret -= Vector2f{ 0.5f, 0.5f }; // map (x & y) [0.5, 1] -> [0, 0.5]
+        ret -= Point2f{ 0.5f, 0.5f }; // map (x & y) [0.5, 1] -> [0, 0.5]
     // ret should be within [0, 0.5]
     check(dr::any_or<true>(ret.x() >= -dr::Epsilon<Float> &&
                            ret.x() <= 0.5f + dr::Epsilon<Float> &&
@@ -74,8 +55,8 @@ MI_VARIANT
 void PathGuide<Float, Spectrum>::DTreeWrapper::add_sample(const Vector3f &dir,
                                                           const Float lum,
                                                           const Float weight) {
-    auto &tree   = current;
-    Vector2f pos = Euler2Angles(dir);
+    auto &tree  = current;
+    Point2f pos = warp::uniform_sphere_to_square(dir);
     tree.weight += weight;
     tree.sum += lum;
 
@@ -178,8 +159,7 @@ MI_VARIANT void PathGuide<Float, Spectrum>::DTreeWrapper::build() {
     check(current.nodes.size() > 0);
     check(prev.nodes.size() > 0);
     // keep track of this tree as the last iteration's
-    prev = current; // copy assignment works as intended, current is deepcopied
-                    // to prev
+    prev = current; // copy assignment, current is deepcopied to prev
 }
 
 MI_VARIANT
@@ -194,7 +174,7 @@ Float PathGuide<Float, Spectrum>::DTreeWrapper::sample_pdf(
 
     // begin recursing into nodes
 
-    Vector2f pos     = Euler2Angles(dir);
+    Point2f pos      = warp::uniform_sphere_to_square(dir);
     const auto *node = &(tree.nodes[0]); // start at root
     while (true) {
         check(node != nullptr);
@@ -275,18 +255,18 @@ MI_VARIANT
 typename PathGuide<Float, Spectrum>::Vector3f
 PathGuide<Float, Spectrum>::DTreeWrapper::sample_dir(
     Sampler<Float, Spectrum> *sampler) const {
-    const Vector2f unit_random = sampler->next_2d();
-    const auto &tree           = prev;
+    const Point2f unit_random = sampler->next_2d();
+    const auto &tree          = prev;
 
     // early out to indicate that this tree is invalid
     if (tree.nodes.size() == 0 ||
         dr::any_or<true>(Float(tree.weight) == 0 || Float(tree.sum) == 0.f))
-        return Angles2Euler(unit_random);
+        return warp::square_to_uniform_sphere(unit_random);
 
     // recurse into the tree
-    Vector2f pos{ 0.f, 0.f }; // center of cartesian
-                              // plane (no leaning)
-    float scale = 1.0f;       // halved on each (non-leaf) iteration
+    Point2f pos{ 0.f, 0.f }; // center of cartesian
+                             // plane (no leaning)
+    float scale = 1.0f;      // halved on each (non-leaf) iteration
 
     size_t which_quadrant = 0;
     const auto *node      = &(tree.nodes[0]); // start at root
@@ -294,12 +274,12 @@ PathGuide<Float, Spectrum>::DTreeWrapper::sample_dir(
         check(node != nullptr);
 
         if (!node->sample(which_quadrant, sampler)) // invalid!
-            return Angles2Euler(unit_random);
+            return warp::square_to_uniform_sphere(unit_random);
         check(which_quadrant <= 3);
 
         // use a "quadrant origin" to add sample{x,y} to the corresponding
         // quadrant
-        const Vector2f quadrant_origin{
+        const Point2f quadrant_origin{
             0.5f * (which_quadrant % 2 == 1), // right side of y=0
             0.5f * (which_quadrant >= 2),     // underneath x=0
         };
@@ -321,7 +301,7 @@ PathGuide<Float, Spectrum>::DTreeWrapper::sample_dir(
         node = &(tree.nodes[child_idx]);
     }
 
-    return Angles2Euler(pos);
+    return warp::square_to_uniform_sphere(pos);
 }
 
 //-------------------SpatialTree-------------------//

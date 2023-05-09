@@ -61,10 +61,8 @@ public: // public API
 
 public:
     // utility methods
-    static Vector2f Euler2Angles(const Vector3f &dir);
-    static Vector3f Angles2Euler(const Vector2f &pos);
-    static size_t Angles2Quadrant(const Vector2f &pos);
-    static Vector2f NormalizeForQuad(const Vector2f &pos, const size_t quad);
+    static size_t Angles2Quadrant(const Point2f &pos);
+    static Point2f NormalizeForQuad(const Point2f &pos, const size_t quad);
 
 private: // DirectionTree (and friends) declaration
     class DTreeWrapper {
