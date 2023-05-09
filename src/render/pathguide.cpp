@@ -465,14 +465,14 @@ void PathGuide<Float, Spectrum>::add_radiance(
     Point3f newPos        = pos;
     const Float weight    = 0.25f;
     const Float pDoJitter = 0.5f; // probability of jittering the sample:
-    Vector3f size(1, 1, 1);
-    const DTreeWrapper &exact_dir_tree =
-        spatial_tree.get_direction_tree(pos, &size); // to get the size
+    Vector3f neigh_size(1, 1, 1);
+    const DTreeWrapper &exact_dir_tree = // without jitter
+        spatial_tree.get_direction_tree(pos, &neigh_size);
     if (sampler != nullptr &&
         dr::any_or<true>(sampler->next_1d() > pDoJitter)) {
         { // perform stochastic filtering on spatial tree
             // jitter within bounding box of leaf node containing pos
-            Vector3f offset = size;
+            Vector3f offset = neigh_size;
             offset.x() *= sampler->next_1d() - 0.5f;
             offset.y() *= sampler->next_1d() - 0.5f;
             offset.z() *= sampler->next_1d() - 0.5f;
@@ -480,6 +480,7 @@ void PathGuide<Float, Spectrum>::add_radiance(
             newPos = dr::minimum(newPos, spatial_tree.bounds.max);
             newPos = dr::maximum(newPos, spatial_tree.bounds.min);
         }
+        // traverse again down the spatial tree, but include jitter
         const DTreeWrapper &dir_tree = spatial_tree.get_direction_tree(newPos);
         const_cast<DTreeWrapper &>(dir_tree).add_sample(dir, luminance, weight);
     } else {
@@ -489,17 +490,14 @@ void PathGuide<Float, Spectrum>::add_radiance(
 }
 
 MI_VARIANT
-typename PathGuide<Float, Spectrum>::Vector3f
-PathGuide<Float, Spectrum>::sample(const Vector3f &pos, Float &pdf,
+std::pair<typename PathGuide<Float, Spectrum>::Vector3f, Float>
+PathGuide<Float, Spectrum>::sample(const Vector3f &pos,
                                    Sampler<Float, Spectrum> *sampler) const {
-    // O(log(n)) search through cartesian space to get the direction dTree at
-    // pos
+    // logarithmic complexity to traverse both trees (spatial & directional)
     const DTreeWrapper &dir_tree = spatial_tree.get_direction_tree(pos);
-    // O(log(n)) search through directional coordinates to sample direction and
-    // pdf
-    const Vector3f ret = dir_tree.sample_dir(sampler);
-    pdf                = dir_tree.sample_pdf(ret);
-    return ret;
+    const Vector3f wo            = dir_tree.sample_dir(sampler);
+    const Float pdf              = dir_tree.sample_pdf(wo);
+    return { wo, pdf };
 }
 
 MI_VARIANT

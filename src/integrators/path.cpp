@@ -237,14 +237,14 @@ public:
                     Vector3f pg_wo;
                     if (dr::any_or<true>(sampler->next_1d() < mu)) {
                         // update the pathguide-recommended sample values
-                        pg_wo = si.to_local(this->pg.sample(si.p, pg_pdf, sampler));
+                        std::tie(pg_wo, pg_pdf) = this->pg.sample(si.p, sampler);
+                        pg_wo = si.to_local(pg_wo); // convert world-aligned -> surface-aligned
                         // evaluate bsdf with the pathguide recommended sample
-                        fs = bsdf->eval(bsdf_ctx, si, pg_wo);
-                        bs_pdf = bsdf->pdf(bsdf_ctx, si, pg_wo);
+                        std::tie(fs, bs_pdf) = bsdf->eval_pdf(bsdf_ctx, si, pg_wo);
                     } else {
+                        // just use the bsdf_sample & bsdf_weight as the bsdf terms
                         pg_wo = bsdf_sample.wo;
                         bs_pdf = bsdf_sample.pdf;
-                        // just use the bsdf_sample & bsdf_weight as the bsdf terms
 
                         // the bsdf_weight is the "BSDF value divided by the probability
                         // (multiplied by the cosine foreshortening factor)" so we do

@@ -2,14 +2,12 @@
 
 #include <mitsuba/core/atomic.h>    // AtomicFloat
 #include <mitsuba/core/bbox.h>      // ScalarBoundingBox3f
-#include <mitsuba/core/fwd.h>       // MI_IMPORT_CORE_TYPES_PREFIX
 #include <mitsuba/core/spectrum.h>  // Spectrum
-#include <mitsuba/core/vector.h>    // Vector
 #include <mitsuba/render/sampler.h> // Sampler
 
 NAMESPACE_BEGIN(mitsuba)
 
-template <typename Float, typename Spectrum> class MI_EXPORT_LIB PathGuide {
+template <typename Float, typename Spectrum> class PathGuide {
 public:
     MI_IMPORT_CORE_TYPES() // imports types such as Vector3f, Point3f, Color3f
 
@@ -57,8 +55,8 @@ public: // public API
                       Sampler<Float, Spectrum> *sampler = nullptr) const;
 
     // to (importance) sample a direction and its corresponding pdf
-    Vector3f sample(const Vector3f &pos, Float &pdf,
-                    Sampler<Float, Spectrum> *sampler) const;
+    std::pair<Vector3f, Float> sample(const Vector3f &pos,
+                                      Sampler<Float, Spectrum> *sampler) const;
     Float sample_pdf(const Point3f &pos, const Vector3f &dir) const;
 
 public:
