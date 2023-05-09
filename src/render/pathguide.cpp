@@ -30,11 +30,8 @@ PathGuide<Float, Spectrum>::NormalizeForQuad(const Point2f &pos,
     Point2f ret = dr::clamp(pos, 0.f, 1.f); // within bounds
     check(quad <= 3);
     if (quad == 0) // top left (quadrant 0)
-    {              // do nothing! (already within [0,0.5] for both x and y)
-        check(dr::any_or<true>(ret.x() >= -dr::Epsilon<Float> &&
-                               ret.x() <= 0.5f + dr::Epsilon<Float> &&
-                               ret.y() >= -dr::Epsilon<Float> &&
-                               ret.y() <= 0.5f + dr::Epsilon<Float>));
+    {
+        // do nothing! (already within [0,0.5] for both x and y)
     } else if (quad == 1)            // top right (quadrant 1)
         ret -= Point2f{ 0.5f, 0.f }; // map (x) [0.5, 1] -> [0, 0.5]
     else if (quad == 2)              // bottom left (quadrant 2)
@@ -97,8 +94,6 @@ void PathGuide<Float, Spectrum>::DTreeWrapper::reset(const size_t max_depth,
     std::stack<StackItem> stack;
     stack.push({ 0, 0, &prev, 1 });
 
-    const size_t max_children = 100000;
-
     const Float prev_sum = Float(prev.sum);
     while (!stack.empty()) {
         const StackItem s = stack.top();
@@ -113,10 +108,8 @@ void PathGuide<Float, Spectrum>::DTreeWrapper::reset(const size_t max_depth,
             if (s.depth < max_depth &&
                 dr::any_or<true>(quad_sum > prev_sum * rho)) {
                 // add child and check if parent
-                const size_t child_idx =
-                    current.nodes.size(); // new child's index!
-                // create the child!
-                current.nodes.emplace_back();
+                const size_t child_idx = current.nodes.size();
+                current.nodes.emplace_back(); // create the child!
                 auto &new_node = current.nodes.back();
 
                 if (!other_node.bIsLeaf(quad)) {
@@ -135,13 +128,10 @@ void PathGuide<Float, Spectrum>::DTreeWrapper::reset(const size_t max_depth,
                 // distribute evenly over 4 quads
                 new_node.data_fill(quad_sum / 4.f);
 
-                if (current.nodes.size() > max_children) {
-                    std::ostringstream oss;
-                    oss << "PathGuide::DTreeWrapper reset hit max "
-                           "children count!"
-                        << std::endl;
-                    Log(Error, "%s", oss.str());
-                    stack = std::stack<StackItem>(); // reset, break from loop
+                if (current.nodes.size() >
+                    std::numeric_limits<uint32_t>::max()) {
+                    Log(Error, "DTreeReset hit max children count!");
+                    stack = std::stack<StackItem>();
                     break;
                 }
             }
@@ -167,13 +157,13 @@ Float PathGuide<Float, Spectrum>::DTreeWrapper::sample_pdf(
     const Vector3f &dir) const {
     const auto &tree = prev;
 
-    Float pdf = 1.f / (4.f * dr::Pi<Float>); // default naive pdf (unit sphere)
+    // pdf starts out as 1/4pi (uniform across sphere)
+    Float pdf = warp::square_to_uniform_sphere_pdf(dir);
     if (tree.nodes.size() == 0 ||
         dr::any_or<true>(Float(tree.weight) == 0.f || Float(tree.sum) == 0.f))
         return pdf;
 
     // begin recursing into nodes
-
     Point2f pos      = warp::uniform_sphere_to_square(dir);
     const auto *node = &(tree.nodes[0]); // start at root
     while (true) {
@@ -264,8 +254,7 @@ PathGuide<Float, Spectrum>::DTreeWrapper::sample_dir(
         return warp::square_to_uniform_sphere(unit_random);
 
     // recurse into the tree
-    Point2f pos{ 0.f, 0.f }; // center of cartesian
-                             // plane (no leaning)
+    Point2f pos{ 0.f, 0.f }; // center of cartesian plane (no leaning)
     float scale = 1.0f;      // halved on each (non-leaf) iteration
 
     size_t which_quadrant = 0;
@@ -277,8 +266,7 @@ PathGuide<Float, Spectrum>::DTreeWrapper::sample_dir(
             return warp::square_to_uniform_sphere(unit_random);
         check(which_quadrant <= 3);
 
-        // use a "quadrant origin" to add sample{x,y} to the corresponding
-        // quadrant
+        // use a "quadrant origin" to push sample in corresponding quadrant
         const Point2f quadrant_origin{
             0.5f * (which_quadrant % 2 == 1), // right side of y=0
             0.5f * (which_quadrant >= 2),     // underneath x=0
@@ -290,7 +278,7 @@ PathGuide<Float, Spectrum>::DTreeWrapper::sample_dir(
             pos += scale * (quadrant_origin + 0.5f * unit_random);
             break;
         } else {
-            // continue burrowing straight into this quadrant
+            // continue burrowing into this quadrant
             pos += scale * quadrant_origin;
             scale /= 2.f;
         }
@@ -328,8 +316,7 @@ void PathGuide<Float, Spectrum>::SpatialTree::refine(
     stack.push(0); // root node index
     while (!stack.empty()) {
         size_t idx = stack.top();
-        /// NOTE: we use the raw indices of the nodes (in the vector) rather
-        /// than
+        // we use the raw indices of the nodes (in the vector) rather than
         // storing a single pointer since these elements might get reallocated
         // as the vector resizes!
         stack.pop();
@@ -355,21 +342,20 @@ MI_VARIANT
 void PathGuide<Float, Spectrum>::SpatialTree::subdivide(const size_t idx) {
     // split the parent node in 2 to refine samples
     check(node(idx).bIsLeaf()); // has no children
-    /// NOTE: using node(idx) rather than taking a pointer to nodes[idx] because
+    // using node(idx) rather than taking a pointer to nodes[idx] because
     // nodes will resize (thus potentially reallocate) which might invalidate
     // any pointers or references!
-    const Float weight = node(idx).dTree.get_weight();
-    nodes.resize(nodes.size() + node(idx).children.size()); // prepare for new
-                                                            // children
-    for (size_t i = 0; i < node(idx).children.size(); i++) {
+    const Float weight        = node(idx).dTree.get_weight();
+    const size_t num_children = node(idx).children.size();
+    nodes.resize(nodes.size() + num_children); // prepare for new children
+    for (size_t i = 0; i < num_children; i++) {
         const size_t child_idx = nodes.size() - 2 + i;
         node(idx).children[i]  = child_idx; // assign the child to the parent
         SNode &child           = nodes[child_idx];
         child.dTree            = node(idx).dTree; // copy this node's dirtree
         child.dTree.set_weight(weight / 2.f);     // approx half the samples
-        // "iterate through axes on every pass"
-        child.xyz_axis =
-            (node(idx).xyz_axis + 1) % 3; // 0 for x, 1 for y, 2 for z
+        // "iterate through axes on every pass" (0 for x, 1 for y, 2 for z)
+        child.xyz_axis = (node(idx).xyz_axis + 1) % 3;
     }
     node(idx).dTree.free_memory(); // reset this dTree to save memory
     check(!node(idx).bIsLeaf());   // definitely has children now
@@ -401,8 +387,7 @@ PathGuide<Float, Spectrum>::SpatialTree::get_direction_tree(
         x[ax] /= split; // re-normalize (0,0.5) -> (0,1)
         if (size != nullptr)
             (*size)[ax] /= 2.f;
-        // go to next child
-        idx = node(idx).children[child_idx];
+        idx = node(idx).children[child_idx]; // go to next child
     }
     return node(idx).dTree;
 }
@@ -432,8 +417,9 @@ MI_VARIANT
 void PathGuide<Float, Spectrum>::add_radiance(
     const Point3f &pos, const Vector3f &dir, const Color3f &radiance,
     Sampler<Float, Spectrum> *sampler) const {
-    Float rad = luminance(radiance);
-    this->add_radiance(pos, dir, rad, sampler); // convert to luminance
+    const Float lum = luminance(radiance);
+    // call overloaded method that takes a Float (luminance)
+    add_radiance(pos, dir, lum, sampler);
 }
 
 MI_VARIANT

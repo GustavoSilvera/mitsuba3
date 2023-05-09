@@ -205,11 +205,11 @@ private: // SpatialTree (whose leaves are DirectionTrees) declaration
         };
 
         void subdivide(const size_t parent_idx);
-        const SNode &node(const size_t idx) const {
+        inline const SNode &node(const size_t idx) const {
             // check(idx < nodes.size());
             return nodes[idx];
         }
-        SNode &node(const size_t idx) {
+        inline SNode &node(const size_t idx) {
             // check(idx < nodes.size());
             return nodes[idx];
         }

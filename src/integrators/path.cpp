@@ -121,8 +121,8 @@ public:
         BSDFContext   bsdf_ctx;
 
         // Variable for tracking intermediate radiance for path guiding
-        std::vector<std::tuple<Point3f, Vector3f, Spectrum, Spectrum, Spectrum, Float>> intermediate_T;
-        intermediate_T.reserve(m_max_depth);
+        std::vector<std::tuple<Point3f, Vector3f, Spectrum, Spectrum, Spectrum, Float>> pg_vars;
+        pg_vars.reserve(m_max_depth);
 
         /* Set up a Dr.Jit loop. This optimizes away to a normal loop in scalar
            mode, and it generates either a a megakernel (default) or
@@ -136,7 +136,7 @@ public:
            lead to undefined behavior. */
         dr::Loop<Bool> loop("Path Tracer", sampler, ray, throughput, result,
                             eta, depth, valid_ray, prev_si, prev_bsdf_pdf,
-                            prev_bsdf_delta, active, intermediate_T);
+                            prev_bsdf_delta, active, pg_vars);
 
         /* Inform the loop about the maximum number of loop iterations.
            This accelerates wavefront-style rendering by avoiding costly
@@ -228,38 +228,42 @@ public:
 
                 // if we sample a delta reflection, there is 0 probability of
                 // path guiding, so ignore
-                if (dr::any_or<true>(!has_flag(bsdf_sample.sampled_type, BSDFFlags::Delta))) {
-                    // flip a coin to sample between pathguiding and bsdf
-                    const Float mu = 0.5f; // probability of sampling with pg
-                    Float pg_pdf   = 0.f;
-                    Float bs_pdf = 0.f;
-                    Spectrum fs = 0.f;
+                if (dr::any_or<true>(!has_flag(bsdf_sample.sampled_type,
+                                               BSDFFlags::Delta))) {
+                    // flip a coin to enable mixture sampling between
+                    // pathguiding and BSDF sampling
+                    const Float alpha = 0.5f;
+                    Float pg_pdf      = 0.f;
+                    Float bs_pdf      = 0.f;
+                    Spectrum fs       = 0.f;
                     Vector3f pg_wo;
-                    if (dr::any_or<true>(sampler->next_1d() < mu)) {
+                    if (dr::any_or<true>(sampler->next_1d() < alpha)) {
                         // update the pathguide-recommended sample values
                         std::tie(pg_wo, pg_pdf) = this->pg.sample(si.p, sampler);
-                        pg_wo = si.to_local(pg_wo); // convert world-aligned -> surface-aligned
-                        // evaluate bsdf with the pathguide recommended sample
+                        // convert world-aligned dir to surface-aligned dir
+                        pg_wo = si.to_local(pg_wo);
+                        // evaluate bsdf with the pathguide recommended dir
                         std::tie(fs, bs_pdf) = bsdf->eval_pdf(bsdf_ctx, si, pg_wo);
                     } else {
-                        // just use the bsdf_sample & bsdf_weight as the bsdf terms
-                        pg_wo = bsdf_sample.wo;
+                        // use the bsdf_sample & bsdf_weight as the bsdf terms
+                        pg_wo  = bsdf_sample.wo;
                         bs_pdf = bsdf_sample.pdf;
 
-                        // the bsdf_weight is the "BSDF value divided by the probability
-                        // (multiplied by the cosine foreshortening factor)" so we do
-                        // the opposite here (note that foreshortening cancels out)
+                        // the bsdf_weight is the "BSDF value divided by the
+                        // probability (multiplied by the cosine foreshortening
+                        // factor)" so we do the opposite here (note that
+                        // foreshortening cancels out)
                         fs = bsdf_weight * bsdf_sample.pdf;
-                        // now we have the bsdf value, so we can use the new pdf mixture
+                        // now with the bsdf value, we can use the pdf mixture
                         pg_pdf = this->pg.sample_pdf(si.p, si.to_world(pg_wo));
                     }
 
                     // mix together the bsdf probability and the pg probability
-                    Float pdf_mix = dr::lerp(bs_pdf, pg_pdf, mu); // mixture sampling
-                    if (dr::any_or<true>(pdf_mix > 0.f)){
-                        bsdf_weight = (fs / pdf_mix);
-                        bsdf_sample.wo = pg_wo;
-                        bsdf_sample.pdf = pdf_mix;
+                    Float pdf_mixture = dr::lerp(bs_pdf, pg_pdf, alpha);
+                    if (dr::any_or<true>(pdf_mixture > 0.f)) {
+                        bsdf_weight     = (fs / pdf_mixture);
+                        bsdf_sample.wo  = pg_wo;
+                        bsdf_sample.pdf = pdf_mixture;
                     }
                 }
             }
@@ -336,22 +340,28 @@ public:
                no-op in non-differentiable variants. */
             throughput[rr_active] *= dr::rcp(dr::detach(rr_prob));
 
-            if (this->pg.enabled() && !this->pg.ready() && 
+            if (this->pg.enabled() && !this->pg.ready() &&
                 dr::any_or<true>(prev_bsdf_pdf > 0.f && !prev_bsdf_delta && valid_ray)) {
                 /// NOTES:
-                // *result* stores the sum of all radiance up to this point. This includes 
-                // a progressively accumulated *throughput* for the path from the point to the sensor
-                // as well as summing all the direct-connections from next-event-estimation
-                // --- 
-                /// conceptually, if we think of NEE as having created V paths from each bounce
-                // (light source -> eye) then *result* stores the sum of these V paths' radiance
-                // while *throughput* only stores the immediate radiance along the path to here
-                Spectrum path_radiance = result; // how much radiance is flowing through the path ending here
-                if (intermediate_T.size() > 0) {
-                    auto &[o, d, path_rad, result_prev, thru, woPdf] = intermediate_T.back();
-                    path_radiance = result - result_prev; // delta between result (only this path!)
+                // *result* stores the sum of all radiance up to this point.
+                // This includes a progressively accumulated *throughput* for
+                // the path from the point to the sensor as well as summing all
+                // the direct-connections from next-event-estimation
+                // ---
+                /// conceptually, if we think of NEE as having created V paths
+                /// from each bounce
+                // (light source -> eye) then *result* stores the sum of these V
+                // paths' radiance while *throughput* only stores the immediate
+                // radiance along the path to here
+                Spectrum path_radiance = result; // how much radiance is flowing
+                                                 // through the path ending here
+                if (pg_vars.size() > 0) {
+                    auto &[o, d, _, result_prev, T, woPdf] = pg_vars.back();
+                    // delta between result computes the lighting for this path
+                    path_radiance = result - result_prev;
                 }
-                intermediate_T.emplace_back(ray.o, ray.d, path_radiance, result, throughput, bsdf_sample.pdf);
+                pg_vars.emplace_back(ray.o, ray.d, path_radiance, result,
+                                     throughput, bsdf_sample.pdf);
             }
 
             active = active_next && (!rr_active || rr_continue) &&
@@ -359,15 +369,15 @@ public:
         }
 
         if (this->pg.enabled() && !this->pg.ready()) {
-            // accumulate intermediate throughputs for pathguide
             /// NOTE:
-            // at each bounce we track how much radiance we have seen so far, and at
-            // the end we have the total radiance (including NEE) from end to eye
-            // so we can subtract what we've seen. This will give us the sum of the
-            // remaining NEE paths until the end (from the beginning) but we want the
-            // incident radiance starting from this bounce, so we then divide by the 
-            // current throughput seen so far to cancel out those terms.
-            auto to_rgb = [&](const Spectrum &spec){
+            // at each bounce we track how much radiance we have seen so far,
+            // and at the end we have the total radiance (including NEE) from
+            // end to eye so we can subtract what we've seen. This will give us
+            // the sum of the remaining NEE paths until the end (from the
+            // beginning) but we want the incident radiance starting from this
+            // bounce, so we then divide by the current throughput seen so far
+            // to cancel out those terms.
+            auto to_rgb = [&](const Spectrum &spec) {
                 Color3f rgb;
                 if constexpr (is_monochromatic_v<Spectrum>) {
                     rgb = spec.x();
@@ -375,25 +385,27 @@ public:
                     rgb = spec;
                 } else {
                     static_assert(is_spectral_v<Spectrum>);
-                    auto pdf        = pdf_rgb_spectrum(ray.wavelengths);
-                    auto unpol_spec = spec * dr::select(dr::neq(pdf, 0.f), dr::rcp(pdf), 0.f);
+                    auto pdf = pdf_rgb_spectrum(ray.wavelengths);
+                    auto unpol_spec =
+                        spec * dr::select(dr::neq(pdf, 0.f), dr::rcp(pdf), 0.f);
                     rgb = spectrum_to_srgb(unpol_spec, ray.wavelengths, active);
                 }
                 return rgb;
             };
-            bool final_found = false;
+            bool final_found        = false;
             Spectrum final_radiance = 0.f;
-            for (auto r_it = intermediate_T.rbegin(); r_it != intermediate_T.rend(); r_it++) {
+            for (auto r_it = pg_vars.rbegin(); r_it != pg_vars.rend(); r_it++) {
                 // add indirect lighting, o/w pathguide strongly prefers direct
-                const auto &[o, d, path_radiance, result_so_far, thru, woPdf] = (*r_it);
+                const auto &[o, d, path_radiance, _, thru, woPdf] = (*r_it);
 
-                if (!final_found && dr::any_or<true>(luminance(to_rgb(path_radiance)) > 0.f))
-                {
-                    // once the latest path-radiance is computed (last non-zero path-radiance)
-                    // use this path radiance for the indirect lighting of all previous bounces
+                if (!final_found &&
+                    dr::any_or<true>(luminance(to_rgb(path_radiance)) > 0.f)) {
+                    // once the latest path-radiance is computed (last non-zero
+                    // path-radiance) use this path radiance for the indirect
+                    // lighting of all previous bounces
                     final_radiance = path_radiance;
-                    final_found = true;
-                    continue; // don't record radiance for this bounce (direct lighting!)
+                    final_found    = true;
+                    continue; // don't record this bounce (direct illumination)
                 }
                 const Spectrum radiance = (final_radiance / thru) / woPdf;
                 this->pg.add_radiance(o, d, to_rgb(radiance), sampler);
