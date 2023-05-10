@@ -124,7 +124,7 @@ void render(Object *scene_, size_t sensor_i, fs::path filename) {
         develop_callback = [&]() { film->write(filename); };
     }
 
-    integrator->preprocess(scene); // perform 1st pass preprocessing
+    integrator->preprocess(scene);
     integrator->render(scene, (uint32_t) sensor_i,
                        0 /* seed */,
                        0 /* spp */,

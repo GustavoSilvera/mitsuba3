@@ -41,44 +41,10 @@ Integrator<Float, Spectrum>::render(Scene *scene,
                   seed, spp, develop, evaluate);
 }
 
-MI_VARIANT void Integrator<Float, Spectrum>::preprocess(Scene *scene,
-                                                        Sensor *sensor,
-                                                        uint32_t seed,
-                                                        uint32_t spp) {
-    if (!pg.enabled())
-        return;
-    const size_t M = pg.num_refinements_needed();
-    pg.initialize(scene->bbox()); // initialize path guiding
-    ref<ProgressReporter> progress = new ProgressReporter("Building PG");
-    size_t N            = 1; // start off with a single sample, double each iter
-    size_t samples_done = 0;
-    Logger *logger      = mitsuba::Thread::thread()->logger();
-    const auto prev_log_level = logger->log_level();
-    logger->set_log_level(LogLevel::Error); // --quiet
-    if (sensor == nullptr)
-        sensor = scene->sensors()[0].get(); // default to first sensor
-    auto *sampler   = sensor->sampler();
-    uint32_t og_spp = sampler->sample_count();
-    while (!pg.ready()) // needs enough refinements
-    {
-        const auto seed_n = seed + N; // so every pass has a different seed
-        const auto spp_n  = N;        // so ever pass has N many spp
-        {
-            // render a pass of the scene (collecting pathguide samples)
-            // (omit develop and evaluate since these renders are for pg)
-            render(scene, sensor, seed_n, spp_n, false, false);
-        }
-        samples_done++;
-        progress->update(samples_done / (ScalarFloat) M);
-        pg.refine();
-        N *= 2;
-    }
-    // restore the original spp if necessary
-    if (spp == 0)
-        sampler->set_sample_count(og_spp);
-    logger->set_log_level(prev_log_level);
-    Log(Info, "Pathguide construction finished");
-}
+MI_VARIANT void Integrator<Float, Spectrum>::preprocess(Scene * /* scene */,
+                                                        Sensor * /* sensor */,
+                                                        uint32_t /* seed */,
+                                                        uint32_t /* spp */) {}
 
 MI_VARIANT std::vector<std::string> Integrator<Float, Spectrum>::aov_names() const {
     return { };
@@ -495,6 +461,56 @@ SamplingIntegrator<Float, Spectrum>::sample(const Scene * /* scene */,
                                             Float * /* aovs */,
                                             Mask /* active */) const {
     NotImplementedError("sample");
+}
+
+MI_VARIANT void SamplingIntegrator<Float, Spectrum>::preprocess(Scene *scene,
+                                                                Sensor *sensor,
+                                                                uint32_t seed,
+                                                                uint32_t spp) {
+    if (pg.enabled()) {
+        // initialize path guiding with scene bounds
+        pg.initialize(scene->bbox());
+
+        // create a progress reporter for the pathguide training process
+        auto progress             = new ProgressReporter("Building PG");
+        Logger *logger            = mitsuba::Thread::thread()->logger();
+        const auto prev_log_level = logger->log_level();
+        logger->set_log_level(LogLevel::Error); // silence verbosity
+
+        // default to the first sensor if none provided
+        if (sensor == nullptr)
+            sensor = scene->sensors()[0].get();
+        auto *sampler             = sensor->sampler();
+        const uint32_t render_spp = sampler->sample_count();
+
+        // calculate the number of samples used per training pass (render)
+        const size_t M      = pg.num_refinements_needed();
+        const size_t total  = std::pow(2, M) - 1;
+        size_t samples_done = 0; // for progress tracking
+        // double the number of samples across iterations
+        for (size_t N = 1; N < total; N *= 2) {
+            const auto seed_n = seed + N; // so every pass has a different seed
+            const auto spp_n  = N;        // so ever pass has N many spp
+            {
+                // render a pass of the scene (collecting pathguide samples)
+                // (omit develop and evaluate since these renders are for pg)
+                render(scene, sensor, seed_n, spp_n, false, false);
+            }
+            samples_done += N;
+            progress->update(samples_done / static_cast<ScalarFloat>(total));
+            // pathguide SD-tree refinement is not thread safe, so it is done
+            // sequentially here after the (parallel) render is completed
+            pg.refine();
+        }
+
+        // restore the original spp if necessary
+        if (spp == 0)
+            sampler->set_sample_count(render_spp);
+
+        // restore the logger log level to prior to this preprocessing
+        logger->set_log_level(prev_log_level);
+        Log(Info, "Pathguide construction finished");
+    }
 }
 
 // -----------------------------------------------------------------------------

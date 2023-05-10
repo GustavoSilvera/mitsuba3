@@ -93,9 +93,11 @@ public:
                     bool develop = true,
                     bool evaluate = true);
 
-    // perform any preprocessing necessary for the scene, such as path guiding 
-    // SD-tree refinement
-    virtual void preprocess(Scene *scene, Sensor *sensor = nullptr, uint32_t seed = 0, uint32_t spp = 0);
+    /// \brief Perform any preprocessing prior to rendering
+    virtual void preprocess(Scene *scene,
+                            Sensor *sensor = nullptr,
+                            uint32_t seed = 0,
+                            uint32_t spp = 0);
 
     /// \brief Cancel a running render job (e.g. after receiving Ctrl-C)
     virtual void cancel();
@@ -144,9 +146,6 @@ protected:
 
     /// Flag for disabling direct visibility of emitters
     bool m_hide_emitters;
-
-    // Path guider
-    PathGuide<Float, Spectrum> pg;
 };
 
 /** \brief Abstract integrator that performs Monte Carlo sampling starting from
@@ -250,6 +249,10 @@ protected:
                        ScalarFloat diff_scale_factor,
                        Mask active = true) const;
 
+    virtual void preprocess(Scene *scene,
+                            Sensor *sensor = nullptr,
+                            uint32_t seed = 0,
+                            uint32_t spp = 0) override;
 protected:
 
     /// Size of (square) image blocks to render in parallel (in scalar mode)
@@ -262,6 +265,16 @@ protected:
      * If set to (uint32_t) -1, all the work is done in a single pass (default).
      */
     uint32_t m_samples_per_pass;
+
+    /**
+     * \brief Path guider to approximately importance sample indirect lighting
+     *
+     * Mostly follows the details in:
+     * "Practical Path Guiding for Efficient Light-Transport Simulation"
+     *     Thomas Muller, Markus Gross, Jan Novak
+     *     Proceedings of EGSR 2017, vol. 36, no.4
+     */
+    PathGuide<Float, Spectrum> pg;
 };
 
 /** \brief Abstract integrator that performs *recursive* Monte Carlo sampling

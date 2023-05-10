@@ -19,7 +19,7 @@ private: // hyperparameters
     // maximum number of children in leaf d-trees
     const size_t max_DTree_depth = 20;
     // number of refinements until can sample
-    size_t num_refinements_necessary = 6;
+    size_t num_refinements_necessary = 10;
 
     const bool bIsEnabled = true;
 
