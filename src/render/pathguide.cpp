@@ -415,24 +415,15 @@ MI_VARIANT void PathGuide<Float, Spectrum>::refine() {
 
 MI_VARIANT
 void PathGuide<Float, Spectrum>::add_radiance(
-    const Point3f &pos, const Vector3f &dir, const Color3f &radiance,
-    Sampler<Float, Spectrum> *sampler) const {
-    const Float lum = luminance(radiance);
-    // call overloaded method that takes a Float (luminance)
-    add_radiance(pos, dir, lum, sampler);
-}
-
-MI_VARIANT
-void PathGuide<Float, Spectrum>::add_radiance(
     const Point3f &pos, const Vector3f &dir, const Float luminance,
-    Sampler<Float, Spectrum> *sampler) const {
+    Sampler<Float, Spectrum> *sampler) {
     if (dr::any_or<true>(!dr::isfinite(luminance) || luminance < 0.f))
         return;
     Point3f newPos        = pos;
     const Float weight    = 0.25f;
     const Float pDoJitter = 0.5f; // probability of jittering the sample:
     Vector3f neigh_size(1, 1, 1);
-    const DTreeWrapper &exact_dir_tree = // without jitter
+    DTreeWrapper &exact_dir_tree = // without jitter
         spatial_tree.get_direction_tree(pos, &neigh_size);
     if (sampler != nullptr &&
         dr::any_or<true>(sampler->next_1d() > pDoJitter)) {
@@ -447,19 +438,43 @@ void PathGuide<Float, Spectrum>::add_radiance(
             newPos = dr::maximum(newPos, spatial_tree.bounds.min);
         }
         // traverse again down the spatial tree, but include jitter
-        const DTreeWrapper &dir_tree = spatial_tree.get_direction_tree(newPos);
-        const_cast<DTreeWrapper &>(dir_tree).add_sample(dir, luminance, weight);
+        DTreeWrapper &dir_tree = spatial_tree.get_direction_tree(newPos);
+        dir_tree.add_sample(dir, luminance, weight);
     } else {
-        const_cast<DTreeWrapper &>(exact_dir_tree)
-            .add_sample(dir, luminance, weight);
+        exact_dir_tree.add_sample(dir, luminance, weight);
     }
 }
 
 MI_VARIANT
-void PathGuide<Float, Spectrum>::add_radiance_from_thru(
-    const std::vector<std::tuple<Point3f, Vector3f, Spectrum, Spectrum,
-                                 Spectrum, Float>> &intermediate,
-    Sampler<Float, Spectrum> *sampler) const {
+void PathGuide<Float, Spectrum>::add_throughput(const Point3f &pos,
+                                                const Vector3f &dir,
+                                                const Spectrum &result,
+                                                const Spectrum &throughput,
+                                                const Float woPdf) {
+    /// NOTES:
+    // *result* stores the sum of all radiance up to this point.
+    // This includes a progressively accumulated *throughput* for
+    // the path from the point to the sensor as well as summing all
+    // the direct-connections from next-event-estimation
+    // ---
+    /// conceptually, if we think of NEE as having created V paths
+    /// from each bounce
+    // (light source -> eye) then *result* stores the sum of these V
+    // paths' radiance while *throughput* only stores the immediate
+    // radiance along the path to here
+    Spectrum path_radiance = result; // how much radiance is flowing
+                                     // through the path ending here
+    if (thru_vars.size() > 0) {
+        auto &[o, d, _, result_prev, T, woPdf] = thru_vars.back();
+        // delta between result computes the lighting for this path
+        path_radiance = result - result_prev;
+    }
+    thru_vars.emplace_back(pos, dir, path_radiance, result, throughput, woPdf);
+}
+
+MI_VARIANT
+void PathGuide<Float, Spectrum>::calc_radiance_from_thru(
+    Sampler<Float, Spectrum> *sampler) {
     /// NOTE:
     // at each bounce we track how much radiance we have seen so far,
     // and at the end we have the total radiance (including NEE) from
@@ -481,7 +496,7 @@ void PathGuide<Float, Spectrum>::add_radiance_from_thru(
 
     bool final_found        = false;
     Spectrum final_radiance = 0.f;
-    for (auto rev = intermediate.rbegin(); rev != intermediate.rend(); rev++) {
+    for (auto rev = thru_vars.rbegin(); rev != thru_vars.rend(); rev++) {
         // add indirect lighting, o/w pathguide strongly prefers direct
         const auto &[o, d, path_radiance, _, thru, woPdf] = (*rev);
 
@@ -496,6 +511,7 @@ void PathGuide<Float, Spectrum>::add_radiance_from_thru(
         const Spectrum radiance = (final_radiance / thru) / woPdf;
         this->add_radiance(o, d, lum(radiance), sampler);
     }
+    thru_vars.clear();
 }
 
 MI_VARIANT

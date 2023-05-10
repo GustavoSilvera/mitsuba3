@@ -28,6 +28,16 @@ private: // hyperparameters
     void refine(const Float);       // refines the SD-tree, then prepares
                                     // for next iteration
 
+    // Variable for tracking intermediate radiance for path guiding
+    /// NOTE: this is thread_local so that these accumulations can occur in
+    //        parallel along various threads (each thread has its own storage)
+    //        and inline static comes from the requirement that the thread_local
+    //        members must be static. Overall this allows for T separate storage
+    //        instances of the vector to be allocated where T is #threads
+    thread_local inline static std::vector<
+        std::tuple<Point3f, Vector3f, Spectrum, Spectrum, Spectrum, Float>>
+        thru_vars;
+
 public: // public API
     PathGuide() = default;
     // begin construction of the SD-tree
@@ -48,20 +58,19 @@ public: // public API
 
     // to keep track of radiance in the lightfield
     void add_radiance(const Point3f &pos, const Vector3f &dir,
-                      const Color3f &radiance,
-                      Sampler<Float, Spectrum> *sampler = nullptr) const;
-    void add_radiance(const Point3f &pos, const Vector3f &dir,
                       const Float luminance,
-                      Sampler<Float, Spectrum> *sampler = nullptr) const;
+                      Sampler<Float, Spectrum> *sampler = nullptr);
+
+    // keep track of throughput to calculate incident radiance at every boucne
+    void add_throughput(const Point3f &pos, const Vector3f &dir,
+                        const Spectrum &result, const Spectrum &throughput,
+                        const Float woPdf);
 
     // when the radiance is not computed recursively, it is nontrivial to get
     // the incident radiance at every bounce. So this provides the means to
     // store intermediate variables and recompute these quantities for training
 
-    void add_radiance_from_thru(
-        const std::vector<std::tuple<Point3f, Vector3f, Spectrum, Spectrum,
-                                     Spectrum, Float>> &intermediate,
-        Sampler<Float, Spectrum> *sampler) const;
+    void calc_radiance_from_thru(Sampler<Float, Spectrum> *sampler);
 
     // to (importance) sample a direction and its corresponding pdf
     std::pair<Vector3f, Float> sample(const Vector3f &pos,

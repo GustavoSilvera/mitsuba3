@@ -120,10 +120,6 @@ public:
         Bool          prev_bsdf_delta = true;
         BSDFContext   bsdf_ctx;
 
-        // Variable for tracking intermediate radiance for path guiding
-        std::vector<std::tuple<Point3f, Vector3f, Spectrum, Spectrum, Spectrum, Float>> pg_vars;
-        pg_vars.reserve(m_max_depth);
-
         /* Set up a Dr.Jit loop. This optimizes away to a normal loop in scalar
            mode, and it generates either a a megakernel (default) or
            wavefront-style renderer in JIT variants. This can be controlled by
@@ -136,7 +132,7 @@ public:
            lead to undefined behavior. */
         dr::Loop<Bool> loop("Path Tracer", sampler, ray, throughput, result,
                             eta, depth, valid_ray, prev_si, prev_bsdf_pdf,
-                            prev_bsdf_delta, active, pg_vars);
+                            prev_bsdf_delta, active);
 
         /* Inform the loop about the maximum number of loop iterations.
            This accelerates wavefront-style rendering by avoiding costly
@@ -225,7 +221,8 @@ public:
                 // bsdf_val, bsdf_pdf is eval(si.p, wo) of emitted bounce, so
                 // basically ignore them for pathguiding!
 
-                std::tie(bsdf_sample, bsdf_weight) = pg_mixture_sample(si, bsdf, bsdf_sample, bsdf_ctx, bsdf_weight, sampler);
+                std::tie(bsdf_sample, bsdf_weight) = pg_mixture_sample(
+                    si, bsdf, bsdf_sample, bsdf_ctx, bsdf_weight, sampler);
             }
 
             // --------------- Emitter sampling contribution ----------------
@@ -302,26 +299,11 @@ public:
 
             if (this->pg.enabled() && !this->pg.ready() &&
                 dr::any_or<true>(prev_bsdf_pdf > 0.f && !prev_bsdf_delta && valid_ray)) {
-                /// NOTES:
-                // *result* stores the sum of all radiance up to this point.
-                // This includes a progressively accumulated *throughput* for
-                // the path from the point to the sensor as well as summing all
-                // the direct-connections from next-event-estimation
-                // ---
-                /// conceptually, if we think of NEE as having created V paths
-                /// from each bounce
-                // (light source -> eye) then *result* stores the sum of these V
-                // paths' radiance while *throughput* only stores the immediate
-                // radiance along the path to here
-                Spectrum path_radiance = result; // how much radiance is flowing
-                                                 // through the path ending here
-                if (pg_vars.size() > 0) {
-                    auto &[o, d, _, result_prev, T, woPdf] = pg_vars.back();
-                    // delta between result computes the lighting for this path
-                    path_radiance = result - result_prev;
-                }
-                pg_vars.emplace_back(ray.o, ray.d, path_radiance, result,
-                                     throughput, bsdf_sample.pdf);
+                // add the intermediate values from throughput accumulation necessary
+                // for computing the incident radiance on each bounce
+                const_cast<PathGuide<Float, Spectrum> &>(this->pg)
+                    .add_throughput(ray.o, ray.d, result, throughput,
+                                    bsdf_sample.pdf);
             }
 
             active = active_next && (!rr_active || rr_continue) &&
@@ -329,7 +311,10 @@ public:
         }
 
         if (this->pg.enabled() && !this->pg.ready()) {
-            this->pg.add_radiance_from_thru(pg_vars, sampler);
+            // using the intermediate values stored from throughput accumulation
+            // calculate the incident radiance at every bounce along this path
+            const_cast<PathGuide<Float, Spectrum> &>(this->pg)
+                .calc_radiance_from_thru(sampler);
         }
 
         return {
@@ -354,7 +339,7 @@ public:
 
         // flip a coin to enable mixture sampling between
         // pathguiding and BSDF sampling
-        const Float alpha = 0.5f;
+        const Float alpha = 0.5f; // probability of path guiding
         Float pg_pdf      = 0.f;
         Float bs_pdf      = 0.f;
         Spectrum f_s      = 0.f; // bsdf evaluation f_s(x)
