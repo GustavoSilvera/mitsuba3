@@ -1,3 +1,4 @@
+#include <limits> // std::numeric_limits
 #include <mitsuba/core/warp.h>
 #include <mitsuba/render/pathguide.h>
 #include <stack> // std::stack
