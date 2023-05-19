@@ -224,11 +224,11 @@ private: // SpatialTree (whose leaves are DirectionTrees) declaration
 
         void subdivide(const size_t parent_idx);
         inline const SNode &node(const size_t idx) const {
-            // check(idx < nodes.size());
+            Assert(idx < nodes.size());
             return nodes[idx];
         }
         inline SNode &node(const size_t idx) {
-            // check(idx < nodes.size());
+            Assert(idx < nodes.size());
             return nodes[idx];
         }
 

@@ -5,11 +5,6 @@
 
 NAMESPACE_BEGIN(mitsuba)
 
-#define check(x)                                                               \
-    if (!(x))                                                                  \
-        throw std::runtime_error("Assertion failed on line " +                 \
-                                 std::to_string(__LINE__));
-
 MI_VARIANT
 size_t PathGuide<Float, Spectrum>::Angles2Quadrant(const Point2f &pos) {
     // takes the 2D location input and returns the corresponding quadrant
@@ -29,7 +24,7 @@ typename PathGuide<Float, Spectrum>::Point2f
 PathGuide<Float, Spectrum>::NormalizeForQuad(const Point2f &pos,
                                              const size_t quad) {
     Point2f ret = dr::clamp(pos, 0.f, 1.f); // within bounds
-    check(quad <= 3);
+    Assert(quad <= 3);
     if (quad == 0) // top left (quadrant 0)
     {
         // do nothing! (already within [0,0.5] for both x and y)
@@ -40,10 +35,10 @@ PathGuide<Float, Spectrum>::NormalizeForQuad(const Point2f &pos,
     else
         ret -= Point2f{ 0.5f, 0.5f }; // map (x & y) [0.5, 1] -> [0, 0.5]
     // ret should be within [0, 0.5]
-    check(dr::any_or<true>(ret.x() >= -dr::Epsilon<Float> &&
-                           ret.x() <= 0.5f + dr::Epsilon<Float> &&
-                           ret.y() >= -dr::Epsilon<Float> &&
-                           ret.y() <= 0.5f + dr::Epsilon<Float>));
+    Assert(dr::any_or<true>(ret.x() >= -dr::Epsilon<Float> &&
+                            ret.x() <= 0.5f + dr::Epsilon<Float> &&
+                            ret.y() >= -dr::Epsilon<Float> &&
+                            ret.y() <= 0.5f + dr::Epsilon<Float>));
     return 2.f * ret; // map [0, 0.5] -> [0, 1]
 }
 
@@ -60,12 +55,12 @@ void PathGuide<Float, Spectrum>::DTreeWrapper::add_sample(const Vector3f &dir,
 
     if (tree.nodes.size() == 0)
         tree.nodes.resize(1); // ensure always have a root node!
-    check(tree.nodes.size() >= 1);
+    Assert(tree.nodes.size() >= 1);
 
     // update internal nodes
     auto *node = &(tree.nodes[0]); // root
     while (true) {
-        check(node != nullptr);
+        Assert(node != nullptr);
         const size_t quad_idx = Angles2Quadrant(pos);
         pos                   = NormalizeForQuad(pos, quad_idx);
         node->data[quad_idx] += lum;
@@ -101,8 +96,8 @@ void PathGuide<Float, Spectrum>::DTreeWrapper::reset(const size_t max_depth,
         stack.pop();
 
         current.max_depth = std::max(current.max_depth, s.depth);
-        check(s.tree != nullptr);
-        check(s.other_idx < s.tree->nodes.size());
+        Assert(s.tree != nullptr);
+        Assert(s.other_idx < s.tree->nodes.size());
         const auto &other_node = s.tree->nodes[s.other_idx];
         for (size_t quad = 0; quad < other_node.data.size(); quad++) {
             const Float quad_sum = Float(other_node.data[quad]);
@@ -115,7 +110,7 @@ void PathGuide<Float, Spectrum>::DTreeWrapper::reset(const size_t max_depth,
 
                 if (!other_node.bIsLeaf(quad)) {
                     // must be because other node comes from last tree
-                    check(s.tree == &prev);
+                    Assert(s.tree == &prev);
                     stack.push({ child_idx, other_node.children[quad], s.tree,
                                  s.depth + 1 });
                 } else {
@@ -147,8 +142,8 @@ void PathGuide<Float, Spectrum>::DTreeWrapper::reset(const size_t max_depth,
 
 MI_VARIANT void PathGuide<Float, Spectrum>::DTreeWrapper::build() {
     // must always have a root node!
-    check(current.nodes.size() > 0);
-    check(prev.nodes.size() > 0);
+    Assert(current.nodes.size() > 0);
+    Assert(prev.nodes.size() > 0);
     // keep track of this tree as the last iteration's
     prev = current; // copy assignment, current is deepcopied to prev
 }
@@ -168,7 +163,7 @@ Float PathGuide<Float, Spectrum>::DTreeWrapper::sample_pdf(
     Point2f pos      = warp::uniform_sphere_to_square(dir);
     const auto *node = &(tree.nodes[0]); // start at root
     while (true) {
-        check(node != nullptr);
+        Assert(node != nullptr);
 
         const size_t quad_idx = Angles2Quadrant(pos);
         pos                   = NormalizeForQuad(pos, quad_idx);
@@ -229,10 +224,10 @@ bool PathGuide<Float, Spectrum>::DTreeWrapper::DirTree::DirNode::sample(
         quadrant = 2;
     } else // dice rolls bottom right
     {
-        check(dr::any_or<true>(sample <= 1.f + dr::Epsilon<Float>));
+        Assert(dr::any_or<true>(sample <= 1.f + dr::Epsilon<Float>));
         quadrant = 3;
     }
-    check(quadrant <= 3); // 0, 1, 2, or 3
+    Assert(quadrant <= 3); // 0, 1, 2, or 3
     return true;
 }
 
@@ -261,11 +256,11 @@ PathGuide<Float, Spectrum>::DTreeWrapper::sample_dir(
     size_t which_quadrant = 0;
     const auto *node      = &(tree.nodes[0]); // start at root
     while (true) {
-        check(node != nullptr);
+        Assert(node != nullptr);
 
         if (!node->sample(which_quadrant, sampler)) // invalid!
             return warp::square_to_uniform_sphere(unit_random);
-        check(which_quadrant <= 3);
+        Assert(which_quadrant <= 3);
 
         // use a "quadrant origin" to push sample in corresponding quadrant
         const Point2f quadrant_origin{
@@ -342,7 +337,7 @@ void PathGuide<Float, Spectrum>::SpatialTree::refine(
 MI_VARIANT
 void PathGuide<Float, Spectrum>::SpatialTree::subdivide(const size_t idx) {
     // split the parent node in 2 to refine samples
-    check(node(idx).bIsLeaf()); // has no children
+    Assert(node(idx).bIsLeaf()); // has no children
     // using node(idx) rather than taking a pointer to nodes[idx] because
     // nodes will resize (thus potentially reallocate) which might invalidate
     // any pointers or references!
@@ -359,7 +354,7 @@ void PathGuide<Float, Spectrum>::SpatialTree::subdivide(const size_t idx) {
         child.xyz_axis = (node(idx).xyz_axis + 1) % 3;
     }
     node(idx).dTree.free_memory(); // reset this dTree to save memory
-    check(!node(idx).bIsLeaf());   // definitely has children now
+    Assert(!node(idx).bIsLeaf());  // definitely has children now
 }
 
 MI_VARIANT
@@ -371,13 +366,13 @@ PathGuide<Float, Spectrum>::SpatialTree::get_direction_tree(
     // use a position normalized [0 -> 1]^3 within this dTree's bbox
     Vector3f x = (pos - bounds.min) / bounds.extents();
 
-    check(nodes.size() > 0); // need at least a root node!
+    Assert(nodes.size() > 0); // need at least a root node!
 
     const float split = 0.5f; // decision boundary between left and right child
     size_t idx        = 0;    // start at root node, descent down tree
     while (!node(idx).bIsLeaf()) {
         const auto ax = node(idx).xyz_axis;
-        check(ax <= 2); // x, y, z
+        Assert(ax <= 2); // x, y, z
 
         size_t child_idx = 0;                // assume going to child 0
         if (dr::any_or<true>(x[ax] > split)) // actually going to child 1
