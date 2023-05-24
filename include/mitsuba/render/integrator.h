@@ -274,7 +274,7 @@ protected:
      *     Thomas Muller, Markus Gross, Jan Novak
      *     Proceedings of EGSR 2017, vol. 36, no.4
      */
-    PathGuide<Float, Spectrum> pg;
+    ref<PathGuide<Float, Spectrum>> m_pathguider;
 };
 
 /** \brief Abstract integrator that performs *recursive* Monte Carlo sampling

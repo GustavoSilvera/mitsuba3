@@ -2,27 +2,39 @@
 
 #include <mitsuba/core/atomic.h>    // AtomicFloat
 #include <mitsuba/core/bbox.h>      // ScalarBoundingBox3f
+#include <mitsuba/core/object.h>    // Object
 #include <mitsuba/core/spectrum.h>  // Spectrum
 #include <mitsuba/render/sampler.h> // Sampler
 
 NAMESPACE_BEGIN(mitsuba)
 
-template <typename Float, typename Spectrum> class PathGuide {
+/**
+ * \brief Path Guiding
+ *
+ * TODO
+ */
+template <typename Float, typename Spectrum>
+class MI_EXPORT_LIB PathGuide : public Object {
 public:
     MI_IMPORT_CORE_TYPES() // imports types such as Vector3f, Point3f, Color3f
+    PathGuide(bool enabled, size_t t)
+        : bIsEnabled(enabled), training_budget(t) {}
 
+    MI_DECLARE_CLASS()
 private: // hyperparameters
-    // these are the primary hyperparameters to tune the pathguiding algorithm
-    const Float spatial_tree_thresh = 1000.f; // spatial tree sample threshold
-    // amount of energy from the previous tree to use for refiment
+    // whether or not to use path guiding in the first place
+    const bool bIsEnabled = true;
+    // spatial tree sampling threshold, until a node qualifies for refinement
+    const Float spatial_tree_thresh = 4000.f;
+    // fraction of energy from the previous tree to use for refiment
     const Float rho = 0.01f;
     // maximum number of children in leaf d-trees
     const size_t max_DTree_depth = 20;
     // number of refinements until can sample
-    size_t num_refinements_necessary = 10;
+    const size_t training_budget = 10;
 
-    const bool bIsEnabled = true;
-
+private: // internal use
+    // member variables used for internal representation
     size_t refinement_iter = 0;     // how many refinements have happened
     bool sample_ready      = false; // whether or not we can sample
     void refine(const Float);       // refines the SD-tree, then prepares
@@ -39,22 +51,19 @@ private: // hyperparameters
         thru_vars;
 
 public: // public API
-    PathGuide() = default;
     // begin construction of the SD-tree
     void initialize(const ScalarBoundingBox3f &bbox);
 
     bool enabled() const { return bIsEnabled; }
 
     // return whether the PathGuiding is ready for sampling or needs to be built
-    bool ready() const {
-        return (refinement_iter >= num_refinements_necessary);
-    }
+    bool ready() const { return (refinement_iter >= training_budget); }
 
     // return how many refinements are needed to be ready for sampling
-    size_t num_refinements_needed() const { return num_refinements_necessary; }
+    size_t get_training_budget() const { return training_budget; }
 
     // refine spatial tree from last buffer
-    void refine();
+    void perform_refinement();
 
     // to keep track of radiance in the lightfield
     void add_radiance(const Point3f &pos, const Vector3f &dir,
@@ -239,4 +248,5 @@ private: // class instances
     class SpatialTree spatial_tree;
 };
 
+MI_EXTERN_CLASS(PathGuide)
 NAMESPACE_END(mitsuba)

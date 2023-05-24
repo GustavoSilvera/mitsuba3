@@ -402,7 +402,7 @@ void PathGuide<Float, Spectrum>::refine(const Float thresh) {
     spatial_tree.reset_leaves(max_DTree_depth, rho);
 }
 
-MI_VARIANT void PathGuide<Float, Spectrum>::refine() {
+MI_VARIANT void PathGuide<Float, Spectrum>::perform_refinement() {
     spatial_tree.begin_next_tree_iteration(); // keep track of last trees
     refinement_iter++;
     // next iter should have sqrt(2^n) times the threshold
@@ -528,8 +528,7 @@ Float PathGuide<Float, Spectrum>::sample_pdf(const Point3f &pos,
     return dir_tree.sample_pdf(dir);
 }
 
-// use this to declare the class with template instantiation while in .cpp
-// https://stackoverflow.com/questions/1639797/template-issue-causes-linker-error-c
+MI_IMPLEMENT_CLASS_VARIANT(PathGuide, Object, "pathguide")
 MI_INSTANTIATE_CLASS(PathGuide)
 
 NAMESPACE_END(mitsuba)

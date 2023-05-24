@@ -60,6 +60,7 @@ MI_VARIANT SamplingIntegrator<Float, Spectrum>::SamplingIntegrator(const Propert
     : Base(props) {
 
     m_block_size = props.get<uint32_t>("block_size", 0);
+    m_pathguider = new PathGuide<Float, Spectrum>(props.get<bool>("use_path_guiding", false), 10);
 
     // If a block size is specified, ensure that it is a power of two
     uint32_t block_size = math::round_to_power_of_two(m_block_size);
@@ -467,9 +468,9 @@ MI_VARIANT void SamplingIntegrator<Float, Spectrum>::preprocess(Scene *scene,
                                                                 Sensor *sensor,
                                                                 uint32_t seed,
                                                                 uint32_t spp) {
-    if (pg.enabled()) {
+    if (m_pathguider.get() && m_pathguider->enabled()) {
         // initialize path guiding with scene bounds
-        pg.initialize(scene->bbox());
+        m_pathguider->initialize(scene->bbox());
 
         // create a progress reporter for the pathguide training process
         auto progress             = new ProgressReporter("Building PG");
@@ -484,7 +485,7 @@ MI_VARIANT void SamplingIntegrator<Float, Spectrum>::preprocess(Scene *scene,
         const uint32_t render_spp = sampler->sample_count();
 
         // calculate the number of samples used per training pass (render)
-        const size_t M      = pg.num_refinements_needed();
+        const size_t M      = m_pathguider->get_training_budget();
         const size_t total  = std::pow(2, M) - 1;
         size_t samples_done = 0; // for progress tracking
         // double the number of samples across iterations
@@ -500,7 +501,7 @@ MI_VARIANT void SamplingIntegrator<Float, Spectrum>::preprocess(Scene *scene,
             progress->update(samples_done / static_cast<ScalarFloat>(total));
             // pathguide SD-tree refinement is not thread safe, so it is done
             // sequentially here after the (parallel) render is completed
-            pg.refine();
+            m_pathguider->perform_refinement();
         }
 
         // restore the original spp if necessary

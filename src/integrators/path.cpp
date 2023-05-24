@@ -110,6 +110,7 @@ public:
         Spectrum result               = 0.f;
         Float eta                     = 1.f;
         UInt32 depth                  = 0;
+        auto &pg = (*this->m_pathguider.get());
 
         // If m_hide_emitters == false, the environment emitter will be visible
         Mask valid_ray                = !m_hide_emitters && dr::neq(scene->environment(), nullptr);
@@ -132,7 +133,7 @@ public:
            lead to undefined behavior. */
         dr::Loop<Bool> loop("Path Tracer", sampler, ray, throughput, result,
                             eta, depth, valid_ray, prev_si, prev_bsdf_pdf,
-                            prev_bsdf_delta, active);
+                            prev_bsdf_delta, active, pg);
 
         /* Inform the loop about the maximum number of loop iterations.
            This accelerates wavefront-style rendering by avoiding costly
@@ -216,7 +217,7 @@ public:
                 = bsdf->eval_pdf_sample(bsdf_ctx, si, wo, sample_1, sample_2);
 
             // ------------------------ Path Guiding ------------------------
-            if (this->pg.enabled() && this->pg.ready()) {
+            if (pg.enabled() && pg.ready()) {
                 /// NOTES:
                 // bsdf_val, bsdf_pdf is eval(si.p, wo) of emitted bounce, so
                 // basically ignore them for pathguiding!
@@ -244,7 +245,8 @@ public:
             bsdf_weight = si.to_world_mueller(bsdf_weight, -bsdf_sample.wo, si.wi);
 
             ray = si.spawn_ray(si.to_world(bsdf_sample.wo));
-            if (this->pg.enabled() && this->pg.ready()) {
+            /// TODO: remove when upstreaming
+            if (pg.enabled() && pg.ready()) {
                 #if DEBUG
                 valid_ray=true;
                 auto rgb2spec = [](Spectrum &s, const Color3f &c){
@@ -297,11 +299,11 @@ public:
                no-op in non-differentiable variants. */
             throughput[rr_active] *= dr::rcp(dr::detach(rr_prob));
 
-            if (this->pg.enabled() && !this->pg.ready() &&
+            if (pg.enabled() && !pg.ready() &&
                 dr::any_or<true>(prev_bsdf_pdf > 0.f && !prev_bsdf_delta && valid_ray)) {
                 // add the intermediate values from throughput accumulation necessary
                 // for computing the incident radiance on each bounce
-                const_cast<PathGuide<Float, Spectrum> &>(this->pg)
+                const_cast<PathGuide<Float, Spectrum> &>(pg)
                     .add_throughput(ray.o, ray.d, result, throughput,
                                     bsdf_sample.pdf);
             }
@@ -310,10 +312,10 @@ public:
                      dr::neq(throughput_max, 0.f);
         }
 
-        if (this->pg.enabled() && !this->pg.ready()) {
+        if (pg.enabled() && !pg.ready()) {
             // using the intermediate values stored from throughput accumulation
             // calculate the incident radiance at every bounce along this path
-            const_cast<PathGuide<Float, Spectrum> &>(this->pg)
+            const_cast<PathGuide<Float, Spectrum> &>(pg)
                 .calc_radiance_from_thru(sampler);
         }
 
@@ -330,6 +332,7 @@ public:
                       Sampler *sampler) const {
         Spectrum ret_weight     = bsdf_weight;
         BSDFSample3f ret_sample = bsdf_sample;
+        auto &pg = (*this->m_pathguider.get());
 
         // if we sample a delta reflection, there is 0 probability of
         // path guiding, so ignore
@@ -347,7 +350,7 @@ public:
         Vector3f pg_wo;
         if (dr::any_or<true>(sampler->next_1d() < alpha)) {
             // update the pathguide-recommended sample values
-            std::tie(pg_wo, pg_pdf) = this->pg.sample(si.p, sampler);
+            std::tie(pg_wo, pg_pdf) = pg.sample(si.p, sampler);
             // convert world-aligned dir to surface-aligned dir
             pg_wo = si.to_local(pg_wo);
             // evaluate bsdf with the pathguide recommended dir
@@ -363,7 +366,7 @@ public:
             // foreshortening cancels out)
             f_s = bsdf_weight * bsdf_sample.pdf;
             // now with the bsdf value, we can use the pdf mixture
-            pg_pdf = this->pg.sample_pdf(si.p, si.to_world(pg_wo));
+            pg_pdf = pg.sample_pdf(si.p, si.to_world(pg_wo));
         }
 
         // mix together the bsdf probability and the pg probability
