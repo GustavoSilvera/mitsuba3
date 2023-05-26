@@ -60,7 +60,7 @@ MI_VARIANT SamplingIntegrator<Float, Spectrum>::SamplingIntegrator(const Propert
     : Base(props) {
 
     m_block_size = props.get<uint32_t>("block_size", 0);
-    m_pathguider = new PathGuide<Float, Spectrum>(props.get<bool>("use_path_guiding", false), 10);
+    m_pathguider = new PathGuide<Float, Spectrum>(props.get<float>("path_guide_budget", 0.f));
 
     // If a block size is specified, ensure that it is a power of two
     uint32_t block_size = math::round_to_power_of_two(m_block_size);
@@ -469,11 +469,8 @@ MI_VARIANT void SamplingIntegrator<Float, Spectrum>::preprocess(Scene *scene,
                                                                 uint32_t seed,
                                                                 uint32_t spp) {
     if (m_pathguider.get() && m_pathguider->enabled()) {
-        // initialize path guiding with scene bounds
-        m_pathguider->initialize(scene->bbox());
-
         // create a progress reporter for the pathguide training process
-        auto progress             = new ProgressReporter("Building PG");
+        auto progress             = new ProgressReporter("Training PG");
         Logger *logger            = mitsuba::Thread::thread()->logger();
         const auto prev_log_level = logger->log_level();
         logger->set_log_level(LogLevel::Error); // silence verbosity
@@ -484,14 +481,22 @@ MI_VARIANT void SamplingIntegrator<Float, Spectrum>::preprocess(Scene *scene,
         auto *sampler             = sensor->sampler();
         const uint32_t render_spp = sampler->sample_count();
 
+        // get the number of samples for the scene
+        if (spp == 0)
+            spp = render_spp;
+
+        // initialize path guiding with scene bounds
+        m_pathguider->initialize(spp, scene->bbox());
+
         // calculate the number of samples used per training pass (render)
-        const size_t M      = m_pathguider->get_training_budget();
+        const size_t M      = m_pathguider->get_num_refinements();
         const size_t total  = std::pow(2, M) - 1;
         size_t samples_done = 0; // for progress tracking
+
         // double the number of samples across iterations
         for (size_t N = 1; N < total; N *= 2) {
             const auto seed_n = seed + N; // so every pass has a different seed
-            const auto spp_n  = N;        // so ever pass has N many spp
+            const auto spp_n  = N;        // so every pass has N-many spp
             {
                 // render a pass of the scene (collecting pathguide samples)
                 // (omit develop and evaluate since these renders are for pg)
@@ -499,18 +504,19 @@ MI_VARIANT void SamplingIntegrator<Float, Spectrum>::preprocess(Scene *scene,
             }
             samples_done += N;
             progress->update(samples_done / static_cast<ScalarFloat>(total));
+
             // pathguide SD-tree refinement is not thread safe, so it is done
             // sequentially here after the (parallel) render is completed
             m_pathguider->perform_refinement();
         }
 
-        // restore the original spp if necessary
-        if (spp == 0)
-            sampler->set_sample_count(render_spp);
+        // set the render spp to subtract the path guider training budget
+        uint32_t pg_train_spp = spp * m_pathguider->get_training_budget();
+        sampler->set_sample_count(spp - pg_train_spp);
 
         // restore the logger log level to prior to this preprocessing
         logger->set_log_level(prev_log_level);
-        Log(Info, "Pathguide construction finished");
+        Log(Info, "Pathguide training finished");
     }
 }
 

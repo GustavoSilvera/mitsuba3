@@ -391,9 +391,20 @@ PathGuide<Float, Spectrum>::SpatialTree::get_direction_tree(
 //-------------------PathGuide-------------------//
 
 MI_VARIANT void
-PathGuide<Float, Spectrum>::initialize(const ScalarBoundingBox3f &bbox) {
+PathGuide<Float, Spectrum>::initialize(const uint32_t scene_spp,
+                                       const ScalarBoundingBox3f &bbox) {
+    // calculate the number of refinement operations to perform (each one with
+    // 2x spp of before) to approximately match the training threshold
+    float training_samples = scene_spp * training_budget;
+    max_refinements        = static_cast<size_t>(std::log2(training_samples));
+    if (max_refinements == 0) {
+        Log(Warn,
+            "Calculated maximum number of refinements is 0. Training budget "
+            "must be too low, this will result in an ineffective path guider "
+            "with potentially higher variance than BSDF sampling.");
+    }
     spatial_tree.bounds = bbox;
-    refine(spatial_tree_thresh); // initial refinement/reset
+    refine(spatial_tree_thresh);
 }
 
 MI_VARIANT

@@ -17,21 +17,30 @@ template <typename Float, typename Spectrum>
 class MI_EXPORT_LIB PathGuide : public Object {
 public:
     MI_IMPORT_CORE_TYPES() // imports types such as Vector3f, Point3f, Color3f
-    PathGuide(bool enabled, size_t t)
-        : bIsEnabled(enabled), training_budget(t) {}
+    PathGuide(const float training_budget_percent)
+        : training_budget(training_budget_percent) {
+        if (training_budget < 0.f)
+            Log(Warn, "Path guide cannot train for negative samples. Disabling "
+                      "path guider.");
+        if (training_budget >= 1.f) {
+            Log(Warn, "Using entirety of sampling budget for training the path "
+                      "guider. This means none of the samples will be used for "
+                      "(inference) rendering the final image!");
+        }
+    }
 
     MI_DECLARE_CLASS()
 private: // hyperparameters
-    // whether or not to use path guiding in the first place
-    const bool bIsEnabled = true;
     // spatial tree sampling threshold, until a node qualifies for refinement
     const Float spatial_tree_thresh = 4000.f;
     // fraction of energy from the previous tree to use for refiment
     const Float rho = 0.01f;
     // maximum number of children in leaf d-trees
     const size_t max_DTree_depth = 20;
-    // number of refinements until can sample
-    const size_t training_budget = 10;
+    // percentage of samples in render that are used for training
+    const float training_budget;
+    // total number of refinement iterations before training is complete
+    size_t max_refinements;
 
 private: // internal use
     // member variables used for internal representation
@@ -52,15 +61,19 @@ private: // internal use
 
 public: // public API
     // begin construction of the SD-tree
-    void initialize(const ScalarBoundingBox3f &bbox);
+    void initialize(const uint32_t scene_spp, const ScalarBoundingBox3f &bbox);
 
-    bool enabled() const { return bIsEnabled; }
+    // query whether or not the path guider should be used at all
+    bool enabled() const { return training_budget > 0.f; }
 
-    // return whether the PathGuiding is ready for sampling or needs to be built
-    bool ready() const { return (refinement_iter >= training_budget); }
+    // query whether or not the path guider is ready for sampling (inference)
+    bool ready() const { return (refinement_iter >= max_refinements); }
 
     // return how many refinements are needed to be ready for sampling
-    size_t get_training_budget() const { return training_budget; }
+    size_t get_num_refinements() const { return max_refinements; }
+
+    // return percentage of samples from total scene to be used for training
+    float get_training_budget() const { return training_budget; }
 
     // refine spatial tree from last buffer
     void perform_refinement();
