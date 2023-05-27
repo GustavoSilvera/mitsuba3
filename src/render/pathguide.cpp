@@ -395,12 +395,16 @@ PathGuide<Float, Spectrum>::initialize(const uint32_t scene_spp,
                                        const ScalarBoundingBox3f &bbox) {
     // calculate the number of refinement operations to perform (each one with
     // 2x spp of before) to approximately match the training threshold
-    float training_samples = scene_spp * training_budget;
-    max_refinements        = static_cast<size_t>(std::log2(training_samples));
-    if (max_refinements == 0) {
+    size_t training_samples = static_cast<size_t>(scene_spp * training_budget);
+    // number of iterations ("render passes") where spp is doubled for training
+    num_training_refinements = static_cast<size_t>(std::log2(training_samples));
+    // any overflow from the desired training budget that will be included in
+    // the final training pass (see get_pass_spp(size_t))
+    spp_overflow = training_samples - std::pow(2, num_training_refinements);
+    if (num_training_refinements == 0) {
         Log(Warn,
             "Calculated maximum number of refinements is 0. Training budget "
-            "must be too low, this will result in an ineffective path guider "
+            "is too low, this will result in an ineffective path guider "
             "with potentially higher variance than BSDF sampling.");
     }
     spatial_tree.bounds = bbox;
@@ -414,10 +418,19 @@ void PathGuide<Float, Spectrum>::refine(const Float thresh) {
 }
 
 MI_VARIANT void PathGuide<Float, Spectrum>::perform_refinement() {
+    // performs one refinement iteration. This method should be called at the
+    // end of each training pass since it is not thread safe
     spatial_tree.begin_next_tree_iteration(); // keep track of last trees
-    refinement_iter++;
-    // next iter should have sqrt(2^n) times the threshold
-    refine(dr::pow(2.f, (refinement_iter + 2) * 0.5f) * spatial_tree_thresh);
+    refinement_iter++;                        // not atomic!
+    // "The decision whether to split is driven only by the number of path
+    // vertices that were recorded in the volume of the node in the previous
+    // iteration... Specifically, we split a node if there have been at least c
+    // * sqrt(2^k) path vertices, where 2^k is proportional to the amount of
+    // traced paths in the k-th iteration and c is derived from the resolution
+    // of the quadtrees"
+    // Therefore each subsequent pass needs to contain roughly c * sqrt(2^k)
+    // path vertices where c = spatial_tree_thresh, and k = refinement_iter
+    refine(dr::sqrt(dr::pow(2.f, refinement_iter)) * spatial_tree_thresh);
 }
 
 MI_VARIANT

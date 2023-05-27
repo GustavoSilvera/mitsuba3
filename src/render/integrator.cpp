@@ -469,41 +469,42 @@ MI_VARIANT void SamplingIntegrator<Float, Spectrum>::preprocess(Scene *scene,
                                                                 uint32_t seed,
                                                                 uint32_t spp) {
     if (m_pathguider.get() && m_pathguider->enabled()) {
+        // default to the first sensor if none provided
+        if (sensor == nullptr)
+            sensor = scene->sensors()[0].get();
+        auto *sampler = sensor->sampler();
+
+        // get the number of samples for the scene
+        if (spp == 0)
+            spp = sampler->sample_count();
+
+        // initialize path guiding with scene bounds
+        m_pathguider->initialize(spp, scene->bbox());
+
+        // calculate the number of samples used per training pass (render)
+        const uint32_t pg_train_spp = spp * m_pathguider->get_training_budget();
+        Log(Info, "Starting PathGuide training (%zu samples)", pg_train_spp);
+
         // create a progress reporter for the pathguide training process
         auto progress             = new ProgressReporter("Training PG");
         Logger *logger            = mitsuba::Thread::thread()->logger();
         const auto prev_log_level = logger->log_level();
         logger->set_log_level(LogLevel::Error); // silence verbosity
 
-        // default to the first sensor if none provided
-        if (sensor == nullptr)
-            sensor = scene->sensors()[0].get();
-        auto *sampler             = sensor->sampler();
-        const uint32_t render_spp = sampler->sample_count();
-
-        // get the number of samples for the scene
-        if (spp == 0)
-            spp = render_spp;
-
-        // initialize path guiding with scene bounds
-        m_pathguider->initialize(spp, scene->bbox());
-
-        // calculate the number of samples used per training pass (render)
-        const size_t M      = m_pathguider->get_num_refinements();
-        const size_t total  = std::pow(2, M) - 1;
-        size_t samples_done = 0; // for progress tracking
-
         // double the number of samples across iterations
-        for (size_t N = 1; N < total; N *= 2) {
-            const auto seed_n = seed + N; // so every pass has a different seed
-            const auto spp_n  = N;        // so every pass has N-many spp
-            {
-                // render a pass of the scene (collecting pathguide samples)
-                // (omit develop and evaluate since these renders are for pg)
-                render(scene, sensor, seed_n, spp_n, false, false);
-            }
-            samples_done += N;
-            progress->update(samples_done / static_cast<ScalarFloat>(total));
+        uint32_t complete = 0; // for progress tracking
+        for (size_t pass = 0; !m_pathguider->ready(); pass++) {
+            // number of samples to use on this pass
+            const uint32_t spp_i = m_pathguider->get_pass_spp(pass);
+            const uint32_t seed_i =
+                seed + spp_i; // so every pass has a different seed
+
+            // render a pass of the scene (collecting pathguide samples)
+            // (omit develop and evaluate since these renders are for pg)
+            render(scene, sensor, seed_i, spp_i, false, false);
+
+            complete += spp_i;
+            progress->update(complete / static_cast<ScalarFloat>(pg_train_spp));
 
             // pathguide SD-tree refinement is not thread safe, so it is done
             // sequentially here after the (parallel) render is completed
@@ -511,12 +512,11 @@ MI_VARIANT void SamplingIntegrator<Float, Spectrum>::preprocess(Scene *scene,
         }
 
         // set the render spp to subtract the path guider training budget
-        uint32_t pg_train_spp = spp * m_pathguider->get_training_budget();
-        sampler->set_sample_count(spp - pg_train_spp);
+        sampler->set_sample_count(spp - std::min(spp, pg_train_spp));
 
         // restore the logger log level to prior to this preprocessing
         logger->set_log_level(prev_log_level);
-        Log(Info, "Pathguide training finished");
+        Log(Info, "PathGuide training finished");
     }
 }
 

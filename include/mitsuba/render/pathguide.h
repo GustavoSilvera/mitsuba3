@@ -38,16 +38,17 @@ private: // hyperparameters
     // maximum number of children in leaf d-trees
     const size_t max_DTree_depth = 20;
     // percentage of samples in render that are used for training
-    const float training_budget;
+    const float training_budget = 0.5f; // set in constructor
     // total number of refinement iterations before training is complete
-    size_t max_refinements;
+    size_t num_training_refinements; // set in initialize()
 
 private: // internal use
     // member variables used for internal representation
-    size_t refinement_iter = 0;     // how many refinements have happened
-    bool sample_ready      = false; // whether or not we can sample
-    void refine(const Float);       // refines the SD-tree, then prepares
-                                    // for next iteration
+    size_t refinement_iter = 0; // number of refinements (training passes)
+    size_t spp_overflow    = 0; // remaining spp not part of doubling
+
+    // refines the SD-tree, then prepares for next iteration
+    void refine(const Float);
 
     // Variable for tracking intermediate radiance for path guiding
     /// NOTE: this is thread_local so that these accumulations can occur in
@@ -67,10 +68,16 @@ public: // public API
     bool enabled() const { return training_budget > 0.f; }
 
     // query whether or not the path guider is ready for sampling (inference)
-    bool ready() const { return (refinement_iter >= max_refinements); }
+    bool ready() const { return (refinement_iter >= num_training_refinements); }
 
-    // return how many refinements are needed to be ready for sampling
-    size_t get_num_refinements() const { return max_refinements; }
+    // get number of spp on a particular pass
+    uint32_t get_pass_spp(uint32_t pass_idx) const {
+        // geometrically increasing => double spp on each iteration
+        uint32_t spp = std::pow(2, pass_idx);
+        if (pass_idx == num_training_refinements - 1) // last (training) pass
+            spp += spp_overflow;                      // include the overflow
+        return spp;
+    }
 
     // return percentage of samples from total scene to be used for training
     float get_training_budget() const { return training_budget; }
