@@ -397,10 +397,10 @@ PathGuide<Float, Spectrum>::initialize(const uint32_t scene_spp,
     // 2x spp of before) to approximately match the training threshold
     size_t training_samples = static_cast<size_t>(scene_spp * training_budget);
     // number of iterations ("render passes") where spp is doubled for training
-    num_training_refinements = static_cast<size_t>(std::log2(training_samples));
+    num_training_refinements = static_cast<size_t>(dr::log2i(training_samples));
     // any overflow from the desired training budget that will be included in
     // the final training pass (see get_pass_spp(size_t))
-    spp_overflow = training_samples - std::pow(2, num_training_refinements);
+    spp_overflow = training_samples - dr::pow(2, num_training_refinements);
     if (num_training_refinements == 0) {
         Log(Warn,
             "Calculated maximum number of refinements is 0. Training budget "

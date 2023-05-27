@@ -60,7 +60,7 @@ MI_VARIANT SamplingIntegrator<Float, Spectrum>::SamplingIntegrator(const Propert
     : Base(props) {
 
     m_block_size = props.get<uint32_t>("block_size", 0);
-    m_pathguider = new PathGuide<Float, Spectrum>(props.get<float>("path_guide_budget", 0.f));
+    m_pathguider = new PathGuide<Float, Spectrum>(props.get<float>("pg_budget", 0.f));
 
     // If a block size is specified, ensure that it is a power of two
     uint32_t block_size = math::round_to_power_of_two(m_block_size);
@@ -483,7 +483,8 @@ MI_VARIANT void SamplingIntegrator<Float, Spectrum>::preprocess(Scene *scene,
 
         // calculate the number of samples used per training pass (render)
         const uint32_t pg_train_spp = spp * m_pathguider->get_training_budget();
-        Log(Info, "Starting PathGuide training (%zu samples)", pg_train_spp);
+        Log(Info, "Starting PathGuide training (%zu samples, %.1f%%)",
+            pg_train_spp, 100.f * m_pathguider->get_training_budget());
 
         // create a progress reporter for the pathguide training process
         auto progress             = new ProgressReporter("Training PG");
@@ -516,7 +517,7 @@ MI_VARIANT void SamplingIntegrator<Float, Spectrum>::preprocess(Scene *scene,
 
         // restore the logger log level to prior to this preprocessing
         logger->set_log_level(prev_log_level);
-        Log(Info, "PathGuide training finished");
+        Log(Info, "PathGuide training finished. Switching to final render:");
     }
 }
 

@@ -38,7 +38,11 @@ private: // hyperparameters
     // maximum number of children in leaf d-trees
     const size_t max_DTree_depth = 20;
     // percentage of samples in render that are used for training
-    const float training_budget = 0.5f; // set in constructor
+    // 0.0 => disabled path guider (no training)
+    // 0.5 => 50% of the spp for the total render is dedicated for training
+    // 0.9 => 90% of the spp for the total render is dedicated for training
+    // >= 1.0 causes the final render to have 0 samples (probably not ideal)
+    const float training_budget; // set in constructor
     // total number of refinement iterations before training is complete
     size_t num_training_refinements; // set in initialize()
 
@@ -73,7 +77,7 @@ public: // public API
     // get number of spp on a particular pass
     uint32_t get_pass_spp(uint32_t pass_idx) const {
         // geometrically increasing => double spp on each iteration
-        uint32_t spp = std::pow(2, pass_idx);
+        uint32_t spp = dr::pow(2, pass_idx);
         if (pass_idx == num_training_refinements - 1) // last (training) pass
             spp += spp_overflow;                      // include the overflow
         return spp;
