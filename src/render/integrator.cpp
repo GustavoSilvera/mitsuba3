@@ -494,7 +494,7 @@ MI_VARIANT void SamplingIntegrator<Float, Spectrum>::preprocess(Scene *scene,
 
         // double the number of samples across iterations
         uint32_t complete = 0; // for progress tracking
-        for (size_t pass = 0; !m_pathguider->ready(); pass++) {
+        for (size_t pass = 0; !m_pathguider->done_training(); pass++) {
             // number of samples to use on this pass
             const uint32_t spp_i = m_pathguider->get_pass_spp(pass);
             const uint32_t seed_i =

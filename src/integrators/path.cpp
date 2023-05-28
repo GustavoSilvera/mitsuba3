@@ -217,7 +217,7 @@ public:
                 = bsdf->eval_pdf_sample(bsdf_ctx, si, wo, sample_1, sample_2);
 
             // ------------------------ Path Guiding ------------------------
-            if (pg.enabled() && pg.ready()) {
+            if (pg.enabled() && pg.ready_for_sampling()) {
                 /// NOTES:
                 // bsdf_val, bsdf_pdf is eval(si.p, wo) of emitted bounce, so
                 // basically ignore them for pathguiding!
@@ -246,7 +246,7 @@ public:
 
             ray = si.spawn_ray(si.to_world(bsdf_sample.wo));
             /// TODO: remove when upstreaming
-            if (pg.enabled() && pg.ready()) {
+            if (pg.enabled() && pg.done_training()) {
                 #if DEBUG
                 valid_ray=true;
                 auto rgb2spec = [](Spectrum &s, const Color3f &c){
@@ -299,7 +299,7 @@ public:
                no-op in non-differentiable variants. */
             throughput[rr_active] *= dr::rcp(dr::detach(rr_prob));
 
-            if (pg.enabled() && !pg.ready() &&
+            if (pg.enabled() && !pg.done_training() &&
                 dr::any_or<true>(prev_bsdf_pdf > 0.f && !prev_bsdf_delta && valid_ray)) {
                 // add the intermediate values from throughput accumulation necessary
                 // for computing the incident radiance on each bounce
@@ -312,7 +312,7 @@ public:
                      dr::neq(throughput_max, 0.f);
         }
 
-        if (pg.enabled() && !pg.ready()) {
+        if (pg.enabled() && !pg.done_training()) {
             // using the intermediate values stored from throughput accumulation
             // calculate the incident radiance at every bounce along this path
             const_cast<PathGuide<Float, Spectrum> &>(pg)

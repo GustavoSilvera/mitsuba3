@@ -72,7 +72,17 @@ public: // public API
     bool enabled() const { return training_budget > 0.f; }
 
     // query whether or not the path guider is ready for sampling (inference)
-    bool ready() const { return (refinement_iter >= num_training_refinements); }
+    bool ready_for_sampling() const {
+        // "We train a sequence L1, L2, ... LM where L1 is estimated with just
+        // BSDF sampling and for all k > 1, Lk is esetimated by combining
+        // samples of LK-1 and the BSDF via multiple importance sampling."
+        return (refinement_iter >= 1);
+    }
+
+    // query whether or not the path guider is finished training
+    bool done_training() const {
+        return (refinement_iter >= num_training_refinements);
+    }
 
     // get number of spp on a particular pass
     uint32_t get_pass_spp(uint32_t pass_idx) const {
