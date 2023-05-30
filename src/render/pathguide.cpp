@@ -395,12 +395,31 @@ PathGuide<Float, Spectrum>::initialize(const uint32_t scene_spp,
                                        const ScalarBoundingBox3f &bbox) {
     // calculate the number of refinement operations to perform (each one with
     // 2x spp of before) to approximately match the training threshold
-    size_t training_samples = static_cast<size_t>(scene_spp * training_budget);
+    size_t total_train_spp = static_cast<size_t>(scene_spp * training_budget);
     // number of iterations ("render passes") where spp is doubled for training
-    num_training_refinements = static_cast<size_t>(dr::log2i(training_samples));
+    num_training_refinements = dr::log2i(total_train_spp);
     // any overflow from the desired training budget that will be included in
     // the final training pass (see get_pass_spp(size_t))
-    spp_overflow = training_samples - dr::pow(2, num_training_refinements);
+    spp_overflow = total_train_spp - dr::pow(2, num_training_refinements);
+    if (spp_overflow > 0) {
+        // total_train_spp cant perfectly fit in the geometric series (not a
+        // power of 2), so we have two options: either tack on the overflow to
+        // the end (final pass) or run an extra pass with only the overflow. A
+        // fine heuristic for this is whether or not the overflow is larger than
+        // the spp in the (geometric) final pass. As this should be enough to
+        // constitute its own pass. We want to avoid rendering a new pass with a
+        // very small spp at the end if possible (which harms the learned
+        // distribution approximation)
+        const size_t final_pass_spp = dr::pow(2, num_training_refinements - 1);
+        if (spp_overflow < final_pass_spp) { // if the overflow is large enough
+            // append any overflow to the final pass
+            spp_overflow += dr::pow(2, num_training_refinements - 1);
+        } else {
+            // include another pass for the overflow
+            num_training_refinements++;
+        }
+    }
+
     if (num_training_refinements == 0) {
         Log(Warn,
             "Calculated maximum number of refinements is 0. Training budget "
@@ -409,6 +428,24 @@ PathGuide<Float, Spectrum>::initialize(const uint32_t scene_spp,
     }
     spatial_tree.bounds = bbox;
     refine(spatial_tree_thresh);
+}
+
+MI_VARIANT uint32_t
+PathGuide<Float, Spectrum>::get_pass_spp(const uint32_t pass_idx) const {
+    // geometrically increasing => double spp on each iteration
+    uint32_t spp = dr::pow(2, pass_idx);
+    // if we need to include some overflow in the final pass
+    if (spp_overflow && pass_idx == num_training_refinements - 1) {
+        return spp_overflow;
+    }
+    if (pass_idx >= num_training_refinements) {
+        Log(Warn,
+            "Path guider has reached past the expected number of samples for "
+            "training (%d). Returning 0 spp for this pass (%d)",
+            num_training_refinements, pass_idx);
+        return 0; // should be done training!
+    }
+    return spp;
 }
 
 MI_VARIANT

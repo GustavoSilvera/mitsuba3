@@ -497,8 +497,7 @@ MI_VARIANT void SamplingIntegrator<Float, Spectrum>::preprocess(Scene *scene,
         for (size_t pass = 0; !m_pathguider->done_training(); pass++) {
             // number of samples to use on this pass
             const uint32_t spp_i = m_pathguider->get_pass_spp(pass);
-            const uint32_t seed_i =
-                seed + spp_i; // so every pass has a different seed
+            const uint32_t seed_i = seed + spp_i; // each pass has a unique seed
 
             // render a pass of the scene (collecting pathguide samples)
             // (omit develop and evaluate since these renders are for pg)

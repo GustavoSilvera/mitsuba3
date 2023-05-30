@@ -85,13 +85,7 @@ public: // public API
     }
 
     // get number of spp on a particular pass
-    uint32_t get_pass_spp(uint32_t pass_idx) const {
-        // geometrically increasing => double spp on each iteration
-        uint32_t spp = dr::pow(2, pass_idx);
-        if (pass_idx == num_training_refinements - 1) // last (training) pass
-            spp += spp_overflow;                      // include the overflow
-        return spp;
-    }
+    uint32_t get_pass_spp(const uint32_t pass_idx) const;
 
     // return percentage of samples from total scene to be used for training
     float get_training_budget() const { return training_budget; }
