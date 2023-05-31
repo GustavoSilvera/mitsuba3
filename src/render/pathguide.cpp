@@ -35,9 +35,9 @@ PathGuide<Float, Spectrum>::NormalizeForQuad(const Point2f &pos,
     else
         ret -= Point2f{ 0.5f, 0.5f }; // map (x & y) [0.5, 1] -> [0, 0.5]
     // ret should be within [0, 0.5]
-    Assert(dr::any_or<true>(ret.x() >= -dr::Epsilon<Float> &&
+    Assert(dr::any_or<true>(ret.x() >= 0.0f - dr::Epsilon<Float> &&
                             ret.x() <= 0.5f + dr::Epsilon<Float> &&
-                            ret.y() >= -dr::Epsilon<Float> &&
+                            ret.y() >= 0.0f - dr::Epsilon<Float> &&
                             ret.y() <= 0.5f + dr::Epsilon<Float>));
     return 2.f * ret; // map [0, 0.5] -> [0, 1]
 }
@@ -48,13 +48,12 @@ MI_VARIANT
 void PathGuide<Float, Spectrum>::DTreeWrapper::add_sample(const Vector3f &dir,
                                                           const Float lum,
                                                           const Float weight) {
-    auto &tree  = current;
+    auto &tree  = current; // only adding samples to the current (building) tree
     Point2f pos = warp::uniform_sphere_to_square(dir);
     tree.weight += weight;
     tree.sum += lum;
 
-    if (tree.nodes.size() == 0)
-        tree.nodes.resize(1); // ensure always have a root node!
+    // should always have a root node!
     Assert(tree.nodes.size() >= 1);
 
     // update internal nodes
@@ -189,15 +188,15 @@ Float PathGuide<Float, Spectrum>::DTreeWrapper::sample_pdf(
 MI_VARIANT
 bool PathGuide<Float, Spectrum>::DTreeWrapper::DirTree::DirNode::sample(
     size_t &quadrant, Sampler<Float, Spectrum> *sampler) const {
-    const Float top_left  = Float(data[0]); // atomic load
-    const Float top_right = Float(data[1]); // atomic load
-    const Float bot_left  = Float(data[2]); // atomic load
-    const Float bot_right = Float(data[3]); // atomic load
-    const Float total     = top_left + top_right + bot_left + bot_right;
+    const Float top_L = Float(data[0]); // atomic load quadrants
+    const Float top_R = Float(data[1]); // atomic load quadrants
+    const Float bot_L = Float(data[2]); // atomic load quadrants
+    const Float bot_R = Float(data[3]); // atomic load quadrants
+    const Float total = top_L + top_R + bot_L + bot_R;
 
-    // just use unit random
+    // just use unit random, no data to sample from yet!
     if (dr::any_or<true>(total == 0.f))
-        return false;
+        return false; // fail to sample
 
     // NOTE: quadrants are indexed like this
     // ---------
@@ -206,25 +205,24 @@ bool PathGuide<Float, Spectrum>::DTreeWrapper::DirTree::DirNode::sample(
     // | 2 | 3 |
     // ---------
 
-    // sample the loaded die that is the weighted quadrants according to samples
-    // can probably do something smarter, see
+    // sample the loaded die that is the weighted quadrants according to a
+    // discrete distribution from the data. Can probably also investigate
     // https://www.keithschwarz.com/darts-dice-coins/
 
-    const Float sample = sampler->next_1d();
-    if (dr::any_or<true>(sample < top_left / total)) // dice rolls top left
-    {
+    // roll a dice from 0 to total and see where it lands in relation to the
+    // boundaries set by the data
+    const Float sample = sampler->next_1d() * total;
+    if (dr::any_or<true>(sample < top_L)) {
+        // dice rolls top left
         quadrant = 0;
-    } else if (dr::any_or<true>(sample < (top_left + top_right) /
-                                             total)) // dice rolls top right
-    {
+    } else if (dr::any_or<true>(sample < top_L + top_R)) {
+        // dice rolls top right
         quadrant = 1;
-    } else if (dr::any_or<true>((sample < (top_left + top_right + bot_left) /
-                                              total))) // dice rolls bottom left
-    {
+    } else if (dr::any_or<true>((sample < top_L + top_R + bot_L))) {
+        // dice rolls bottom left
         quadrant = 2;
-    } else // dice rolls bottom right
-    {
-        Assert(dr::any_or<true>(sample <= 1.f + dr::Epsilon<Float>));
+    } else {
+        // dice rolls bottom right
         quadrant = 3;
     }
     Assert(quadrant <= 3); // 0, 1, 2, or 3
@@ -305,9 +303,10 @@ void PathGuide<Float, Spectrum>::SpatialTree::reset_leaves(size_t max_depth,
 }
 
 MI_VARIANT
-void PathGuide<Float, Spectrum>::SpatialTree::refine(
-    const Float sample_threshold) {
-    // traverse dTree via DFS and refine (subdivide) those leaves that qualify
+void PathGuide<Float, Spectrum>::SpatialTree::refine(const Float threshold) {
+    // traverse dTree via DFS and refine (subdivide) those leaves that surpass
+    // the weight threshold. Note this method is NOT thread-safe since it may
+    // reallocate the entire nodes vector (adding children)
     std::stack<size_t> stack;
     stack.push(0); // root node index
     while (!stack.empty()) {
@@ -318,18 +317,17 @@ void PathGuide<Float, Spectrum>::SpatialTree::refine(
         stack.pop();
 
         // currently hit a leaf node, might want to subdivide it (refine)
-        if (node(idx).bIsLeaf() &&
-            dr::any_or<true>(node(idx).dTree.get_weight() > sample_threshold)) {
+        if (nodes[idx].bIsLeaf() &&
+            dr::any_or<true>(nodes[idx].dTree.get_weight() > threshold)) {
             // splits the parent in 2, potentially creating more children
             subdivide(idx); // not thread safe!
         }
 
-        if (!node(idx).bIsLeaf()) // check *again* (subdivision would create
-                                  // children)
+        // recursive through children if needed
+        if (!nodes[idx].bIsLeaf()) // check *again* for new children
         {
-            // begin iterating through children
-            for (const auto idx : node(idx).children)
-                stack.push(idx);
+            for (const auto idx : nodes[idx].children)
+                stack.push(idx); // add children to the stack
         }
     }
 }
@@ -337,24 +335,24 @@ void PathGuide<Float, Spectrum>::SpatialTree::refine(
 MI_VARIANT
 void PathGuide<Float, Spectrum>::SpatialTree::subdivide(const size_t idx) {
     // split the parent node in 2 to refine samples
-    Assert(node(idx).bIsLeaf()); // has no children
-    // using node(idx) rather than taking a pointer to nodes[idx] because
+    Assert(nodes[idx].bIsLeaf()); // has no children
+    // using nodes[idx] rather than taking a pointer to nodes[idx] because
     // nodes will resize (thus potentially reallocate) which might invalidate
     // any pointers or references!
-    const Float weight        = node(idx).dTree.get_weight();
-    const size_t num_children = node(idx).children.size();
+    const Float weight        = nodes[idx].dTree.get_weight();
+    const size_t num_children = nodes[idx].children.size();
     nodes.resize(nodes.size() + num_children); // prepare for new children
     for (size_t i = 0; i < num_children; i++) {
         const size_t child_idx = nodes.size() - 2 + i;
-        node(idx).children[i]  = child_idx; // assign the child to the parent
+        nodes[idx].children[i] = child_idx; // assign the child to the parent
         SNode &child           = nodes[child_idx];
-        child.dTree            = node(idx).dTree; // copy this node's dirtree
-        child.dTree.set_weight(weight / 2.f);     // approx half the samples
+        child.dTree            = nodes[idx].dTree; // copy this node's dirtree
+        child.dTree.set_weight(weight / 2.f);      // approx half the samples
         // "iterate through axes on every pass" (0 for x, 1 for y, 2 for z)
-        child.xyz_axis = (node(idx).xyz_axis + 1) % 3;
+        child.xyz_axis = (nodes[idx].xyz_axis + 1) % 3;
     }
-    node(idx).dTree.free_memory(); // reset this dTree to save memory
-    Assert(!node(idx).bIsLeaf());  // definitely has children now
+    nodes[idx].dTree.free_memory(); // reset this dTree to save memory
+    Assert(!nodes[idx].bIsLeaf());  // definitely has children now
 }
 
 MI_VARIANT
@@ -370,8 +368,8 @@ PathGuide<Float, Spectrum>::SpatialTree::get_direction_tree(
 
     const float split = 0.5f; // decision boundary between left and right child
     size_t idx        = 0;    // start at root node, descent down tree
-    while (!node(idx).bIsLeaf()) {
-        const auto ax = node(idx).xyz_axis;
+    while (!nodes[idx].bIsLeaf()) {
+        const auto ax = nodes[idx].xyz_axis;
         Assert(ax <= 2); // x, y, z
 
         size_t child_idx = 0;                // assume going to child 0
@@ -383,9 +381,9 @@ PathGuide<Float, Spectrum>::SpatialTree::get_direction_tree(
         x[ax] /= split; // re-normalize (0,0.5) -> (0,1)
         if (size != nullptr)
             (*size)[ax] /= 2.f;
-        idx = node(idx).children[child_idx]; // go to next child
+        idx = nodes[idx].children[child_idx]; // go to next child
     }
-    return node(idx).dTree;
+    return nodes[idx].dTree;
 }
 
 //-------------------PathGuide-------------------//
@@ -413,7 +411,7 @@ PathGuide<Float, Spectrum>::initialize(const uint32_t scene_spp,
         const size_t final_pass_spp = dr::pow(2, num_training_refinements - 1);
         if (spp_overflow < final_pass_spp) { // if the overflow is large enough
             // append any overflow to the final pass
-            spp_overflow += dr::pow(2, num_training_refinements - 1);
+            spp_overflow += final_pass_spp;
         } else {
             // include another pass for the overflow
             num_training_refinements++;
@@ -513,12 +511,6 @@ void PathGuide<Float, Spectrum>::add_throughput(const Point3f &pos,
     // This includes a progressively accumulated *throughput* for
     // the path from the point to the sensor as well as summing all
     // the direct-connections from next-event-estimation
-    // ---
-    /// conceptually, if we think of NEE as having created V paths
-    /// from each bounce
-    // (light source -> eye) then *result* stores the sum of these V
-    // paths' radiance while *throughput* only stores the immediate
-    // radiance along the path to here
     Spectrum path_radiance = result; // how much radiance is flowing
                                      // through the path ending here
     if (thru_vars.size() > 0) {
@@ -565,8 +557,10 @@ void PathGuide<Float, Spectrum>::calc_radiance_from_thru(
             final_found    = true;
             continue; // don't record this bounce (direct illumination)
         }
-        const Spectrum radiance = (final_radiance / thru) / woPdf;
-        this->add_radiance(o, d, lum(radiance), sampler);
+        // calculate radiance from this bounce to the light source
+        const Spectrum radiance   = final_radiance / thru;
+        const Spectrum irradiance = radiance / woPdf;
+        this->add_radiance(o, d, lum(irradiance), sampler);
     }
     thru_vars.clear();
     update_progress();
