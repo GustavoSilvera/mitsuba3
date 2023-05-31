@@ -395,7 +395,7 @@ PathGuide<Float, Spectrum>::initialize(const uint32_t scene_spp,
                                        const ScalarBoundingBox3f &bbox) {
     // calculate the number of refinement operations to perform (each one with
     // 2x spp of before) to approximately match the training threshold
-    size_t total_train_spp = static_cast<size_t>(scene_spp * training_budget);
+    total_train_spp = static_cast<size_t>(scene_spp * training_budget);
     // number of iterations ("render passes") where spp is doubled for training
     num_training_refinements = dr::log2i(total_train_spp);
     // any overflow from the desired training budget that will be included in
@@ -569,6 +569,23 @@ void PathGuide<Float, Spectrum>::calc_radiance_from_thru(
         this->add_radiance(o, d, lum(radiance), sampler);
     }
     thru_vars.clear();
+    update_progress();
+}
+
+MI_VARIANT
+void PathGuide<Float, Spectrum>::update_progress() {
+    if (progress == nullptr)
+        return;
+    const size_t spp_done = (++atomic_spp_count); // atomic incr and fetch
+    // should have 100 updates (update the progress bar every 1%)
+    // (these are static since the values can be cached)
+    const static size_t total_spp   = total_train_spp * screensize;
+    const static size_t update_iter = total_spp / 100;
+    // update a maximum of 100 times
+    if (update_iter == 0 || spp_done % update_iter == 0) {
+        // update the progress meter (0.f to 1.f)
+        progress->update(static_cast<float>(spp_done) / total_spp);
+    }
 }
 
 MI_VARIANT

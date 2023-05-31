@@ -3,6 +3,7 @@
 #include <mitsuba/core/atomic.h>    // AtomicFloat
 #include <mitsuba/core/bbox.h>      // ScalarBoundingBox3f
 #include <mitsuba/core/object.h>    // Object
+#include <mitsuba/core/progress.h>  // Progress
 #include <mitsuba/core/spectrum.h>  // Spectrum
 #include <mitsuba/render/sampler.h> // Sampler
 
@@ -64,6 +65,13 @@ private: // internal use
         std::tuple<Point3f, Vector3f, Spectrum, Spectrum, Spectrum, Float>>
         thru_vars;
 
+    // progress tracking
+    ProgressReporter *progress           = nullptr; // train progress reporter
+    size_t total_train_spp               = 0;       // total spp for training
+    size_t screensize                    = 0;       // sensor resolution
+    std::atomic<size_t> atomic_spp_count = 0;       // spp for progress tracking
+    void update_progress();                         // after each (atomic) 1 spp
+
 public: // public API
     // begin construction of the SD-tree
     void initialize(const uint32_t scene_spp, const ScalarBoundingBox3f &bbox);
@@ -93,6 +101,13 @@ public: // public API
     // refine spatial tree from last buffer
     void perform_refinement();
 
+    // call once to allow the path guider to track training progress
+    inline void set_train_progress(ProgressReporter *p,
+                                   const size_t num_pixels) {
+        progress   = p;
+        screensize = num_pixels;
+    }
+
     // to keep track of radiance in the lightfield
     void add_radiance(const Point3f &pos, const Vector3f &dir,
                       const Float luminance,
@@ -106,7 +121,6 @@ public: // public API
     // when the radiance is not computed recursively, it is nontrivial to get
     // the incident radiance at every bounce. So this provides the means to
     // store intermediate variables and recompute these quantities for training
-
     void calc_radiance_from_thru(Sampler<Float, Spectrum> *sampler);
 
     // to (importance) sample a direction and its corresponding pdf

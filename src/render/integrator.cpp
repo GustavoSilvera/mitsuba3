@@ -472,6 +472,7 @@ MI_VARIANT void SamplingIntegrator<Float, Spectrum>::preprocess(Scene *scene,
         // default to the first sensor if none provided
         if (sensor == nullptr)
             sensor = scene->sensors()[0].get();
+        Assert(sensor != nullptr);
         auto *sampler = sensor->sampler();
 
         // get the number of samples for the scene
@@ -486,30 +487,35 @@ MI_VARIANT void SamplingIntegrator<Float, Spectrum>::preprocess(Scene *scene,
         Log(Info, "Starting PathGuide training (%zu samples, %.1f%%)",
             pg_train_spp, 100.f * m_pathguider->get_training_budget());
 
-        // create a progress reporter for the pathguide training process
-        auto progress             = new ProgressReporter("Training PG");
+        // create a progress reporter for the pathguide training process:
+        // rather than updating the progress indicator in the following for loop
+        // (which has very few progress updates) we track internal state
+        // variables for the path guider to update
+        auto progress                   = new ProgressReporter("Training PG");
+        const ScalarVector2u &film_size = sensor->film()->crop_size();
+        const size_t num_pixels         = film_size.x() * film_size.y();
+        m_pathguider->set_train_progress(progress, num_pixels);
+
+        // silence verbosity for the following render() calls
         Logger *logger            = mitsuba::Thread::thread()->logger();
         const auto prev_log_level = logger->log_level();
-        logger->set_log_level(LogLevel::Error); // silence verbosity
+        logger->set_log_level(LogLevel::Error);
 
         // double the number of samples across iterations
-        uint32_t complete = 0; // for progress tracking
         for (size_t pass = 0; !m_pathguider->done_training(); pass++) {
             // number of samples to use on this pass
-            const uint32_t spp_i = m_pathguider->get_pass_spp(pass);
+            const uint32_t spp_i  = m_pathguider->get_pass_spp(pass);
             const uint32_t seed_i = seed + spp_i; // each pass has a unique seed
 
             // render a pass of the scene (collecting pathguide samples)
             // (omit develop and evaluate since these renders are for pg)
             render(scene, sensor, seed_i, spp_i, false, false);
 
-            complete += spp_i;
-            progress->update(complete / static_cast<ScalarFloat>(pg_train_spp));
-
             // pathguide SD-tree refinement is not thread safe, so it is done
             // sequentially here after the (parallel) render is completed
             m_pathguider->perform_refinement();
         }
+        progress->update(1.f); // finish here
 
         // set the render spp to subtract the path guider training budget
         sampler->set_sample_count(spp - std::min(spp, pg_train_spp));
