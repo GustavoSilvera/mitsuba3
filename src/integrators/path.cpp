@@ -350,7 +350,7 @@ public:
         Vector3f pg_wo;
         if (dr::any_or<true>(sampler->next_1d() < alpha)) {
             // update the pathguide-recommended sample values
-            std::tie(pg_wo, pg_pdf) = pg.sample(si.p, sampler);
+            std::tie(pg_wo, pg_pdf) = pg.sample(si.p, sampler->next_2d());
             // convert world-aligned dir to surface-aligned dir
             pg_wo = si.to_local(pg_wo);
             // evaluate bsdf with the pathguide recommended dir

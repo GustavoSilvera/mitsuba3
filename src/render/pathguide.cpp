@@ -35,11 +35,13 @@ PathGuide<Float, Spectrum>::NormalizeForQuad(const Point2f &pos,
     else
         ret -= Point2f{ 0.5f, 0.5f }; // map (x & y) [0.5, 1] -> [0, 0.5]
     // ret should be within [0, 0.5]
-    Assert(dr::any_or<true>(ret.x() >= 0.0f - dr::Epsilon<Float> &&
-                            ret.x() <= 0.5f + dr::Epsilon<Float> &&
-                            ret.y() >= 0.0f - dr::Epsilon<Float> &&
-                            ret.y() <= 0.5f + dr::Epsilon<Float>));
-    return 2.f * ret; // map [0, 0.5] -> [0, 1]
+    Assert(dr::all(ret.x() >= 0.0f - dr::Epsilon<Float> &&
+                   ret.x() <= 0.5f + dr::Epsilon<Float> &&
+                   ret.y() >= 0.0f - dr::Epsilon<Float> &&
+                   ret.y() <= 0.5f + dr::Epsilon<Float>));
+    ret = 2.f * ret; // map [0, 0.5] -> [0, 1]
+    // avoid degeneracies by clamping to (0, 1)
+    return dr::clamp(ret, dr::Epsilon<Float>, dr::OneMinusEpsilon<Float>);
 }
 
 //-------------------DTreeWrapper-------------------//
@@ -187,7 +189,9 @@ Float PathGuide<Float, Spectrum>::DTreeWrapper::sample_pdf(
 
 MI_VARIANT
 bool PathGuide<Float, Spectrum>::DTreeWrapper::DirTree::DirNode::sample(
-    size_t &quadrant, Sampler<Float, Spectrum> *sampler) const {
+    size_t &quad, Float &r1) const {
+    // r1 should be a random sample within (0, 1) that will get re-normalized
+    // during this sampling process (to avoid drawing new samples)
     const Float top_L = Float(data[0]); // atomic load quadrants
     const Float top_R = Float(data[1]); // atomic load quadrants
     const Float bot_L = Float(data[2]); // atomic load quadrants
@@ -211,21 +215,27 @@ bool PathGuide<Float, Spectrum>::DTreeWrapper::DirTree::DirNode::sample(
 
     // roll a dice from 0 to total and see where it lands in relation to the
     // boundaries set by the data
-    const Float sample = sampler->next_1d() * total;
+    r1 = dr::clamp(r1, dr::Epsilon<Float>, dr::OneMinusEpsilon<Float>);
+    const Float sample = r1 * total;
     if (dr::any_or<true>(sample < top_L)) {
         // dice rolls top left
-        quadrant = 0;
+        quad = 0;
+        r1   = sample / top_L;
     } else if (dr::any_or<true>(sample < top_L + top_R)) {
         // dice rolls top right
-        quadrant = 1;
+        quad = 1;
+        r1   = (sample - top_L) / top_R;
     } else if (dr::any_or<true>((sample < top_L + top_R + bot_L))) {
         // dice rolls bottom left
-        quadrant = 2;
+        quad = 2;
+        r1   = (sample - (top_L + top_R)) / bot_L;
     } else {
         // dice rolls bottom right
-        quadrant = 3;
+        quad = 3;
+        r1   = (sample - (top_L + top_R + bot_L)) / bot_R;
     }
-    Assert(quadrant <= 3); // 0, 1, 2, or 3
+    r1 = dr::clamp(r1, dr::Epsilon<Float>, dr::OneMinusEpsilon<Float>);
+    Assert(quad <= 3); // 0, 1, 2, or 3
     return true;
 }
 
@@ -237,15 +247,13 @@ MI_VARIANT void PathGuide<Float, Spectrum>::DTreeWrapper::free_memory() {
 
 MI_VARIANT
 typename PathGuide<Float, Spectrum>::Vector3f
-PathGuide<Float, Spectrum>::DTreeWrapper::sample_dir(
-    Sampler<Float, Spectrum> *sampler) const {
-    const Point2f unit_random = sampler->next_2d();
-    const auto &tree          = prev;
+PathGuide<Float, Spectrum>::DTreeWrapper::sample_dir(Point2f &sample) const {
+    const auto &tree = prev;
 
     // early out to indicate that this tree is invalid
     if (tree.nodes.size() == 0 ||
         dr::any_or<true>(Float(tree.weight) == 0 || Float(tree.sum) == 0.f))
-        return warp::square_to_uniform_sphere(unit_random);
+        return warp::square_to_uniform_sphere(sample);
 
     // recurse into the tree
     Point2f pos{ 0.f, 0.f }; // center of cartesian plane (no leaning)
@@ -256,8 +264,8 @@ PathGuide<Float, Spectrum>::DTreeWrapper::sample_dir(
     while (true) {
         Assert(node != nullptr);
 
-        if (!node->sample(which_quadrant, sampler)) // invalid!
-            return warp::square_to_uniform_sphere(unit_random);
+        if (!node->sample(which_quadrant, sample.x()))
+            return warp::square_to_uniform_sphere(sample); // invalid!
         Assert(which_quadrant <= 3);
 
         // use a "quadrant origin" to push sample in corresponding quadrant
@@ -269,7 +277,7 @@ PathGuide<Float, Spectrum>::DTreeWrapper::sample_dir(
         if (node->bIsLeaf(which_quadrant)) // hit a leaf
         {
             // add the initial random sample to this quadrant
-            pos += scale * (quadrant_origin + 0.5f * unit_random);
+            pos += scale * (quadrant_origin + 0.5f * sample);
             break;
         } else {
             // continue burrowing into this quadrant
@@ -584,11 +592,10 @@ void PathGuide<Float, Spectrum>::update_progress() {
 
 MI_VARIANT
 std::pair<typename PathGuide<Float, Spectrum>::Vector3f, Float>
-PathGuide<Float, Spectrum>::sample(const Vector3f &pos,
-                                   Sampler<Float, Spectrum> *sampler) const {
+PathGuide<Float, Spectrum>::sample(const Vector3f &pos, Point2f sample) const {
     // logarithmic complexity to traverse both trees (spatial & directional)
     const DTreeWrapper &dir_tree = spatial_tree.get_direction_tree(pos);
-    const Vector3f wo            = dir_tree.sample_dir(sampler);
+    const Vector3f wo            = dir_tree.sample_dir(sample);
     const Float pdf              = dir_tree.sample_pdf(wo);
     return { wo, pdf };
 }

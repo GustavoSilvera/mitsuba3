@@ -125,7 +125,7 @@ public: // public API
 
     // to (importance) sample a direction and its corresponding pdf
     std::pair<Vector3f, Float> sample(const Vector3f &pos,
-                                      Sampler<Float, Spectrum> *sampler) const;
+                                      Point2f sample) const;
     Float sample_pdf(const Point3f &pos, const Vector3f &dir) const;
 
 public:
@@ -148,7 +148,7 @@ private: // DirectionTree (and friends) declaration
         }
 
         Float sample_pdf(const Vector3f &dir) const;
-        Vector3f sample_dir(Sampler<Float, Spectrum> *sampler) const;
+        Vector3f sample_dir(Point2f &sample) const;
 
         void add_sample(const Vector3f &dir, const Float lum,
                         const Float weight);
@@ -174,8 +174,7 @@ private: // DirectionTree (and friends) declaration
                 DirNode() = default;
                 std::array<AtomicFloat<Float>, 4> data;
                 std::array<size_t, 4> children{};
-                bool sample(size_t &quadrant,
-                            Sampler<Float, Spectrum> *sampler) const;
+                bool sample(size_t &quadrant, Float &r1) const;
                 bool bIsLeaf(size_t idx) const { return children[idx] == 0; }
                 Float sum() const {
                     Float total = 0.f;
