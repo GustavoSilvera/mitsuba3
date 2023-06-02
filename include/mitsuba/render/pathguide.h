@@ -12,25 +12,44 @@ NAMESPACE_BEGIN(mitsuba)
 /**
  * \brief Path Guiding
  *
- * TODO
+ * A technique enabling importance-sampling of the scattering integral
+ * by learning an approximation of the incident radiance and sampling
+ * it accordingly. This approach is commonly combined with BSDF sampling via
+ * multiple importance sampling to attain low variance [1]
+ *
+ * Implementation of "Practical Path Guiding" from primarily
+ * [1] "Practical Path Guiding for Efficient Light-Transport Simulation"
+ *       Thomas Muller, Markus Gross, Jan Novak
+ *       Proceedings of EGSR 2017, vol. 36, no.4
+ *     (https://tom94.net/data/publications/mueller17practical/mueller17practical.pdf)
+ *
+ * with some additional improvements from the follow-up discussion in
+ * [2] "Practical Path Guiding In Production" by Thomas Muller.
+ *     (https://tom94.net/data/courses/vorba19guiding/vorba19guiding-chapter10.pdf)
  */
 template <typename Float, typename Spectrum>
 class MI_EXPORT_LIB PathGuide : public Object {
 public:
     MI_IMPORT_CORE_TYPES() // imports types such as Vector3f, Point3f, Color3f
-    PathGuide(const float training_budget_percent)
-        : training_budget(training_budget_percent) {
-        if (training_budget < 0.f)
-            Log(Warn, "Path guide cannot train for negative samples. Disabling "
-                      "path guider.");
-        if (training_budget >= 1.f) {
-            Log(Warn, "Using entirety of sampling budget for training the path "
-                      "guider. This means none of the samples will be used for "
-                      "(inference) rendering the final image!");
-        }
-    }
+    PathGuide(const float training_budget, const float p_jitter);
 
     MI_DECLARE_CLASS()
+
+private: // constructor parameters
+    // percentage of samples in render that are used for training
+    // 0.0 => disabled path guider (no training)
+    // 0.5 => 50% of the spp for the total render is dedicated for training
+    // 0.9 => 90% of the spp for the total render is dedicated for training
+    // >= 1.0 causes the final render to have 0 samples (probably not ideal)
+    const float m_training_budget;
+
+    // probability of jittering a sample within its spatial neighbourhood. This
+    // acts as a filter over the spatial domain to reduce artifacts caused by
+    // the boundary conditions of the spatial subdivisions.
+    // See "Stochastic Spatial Filter" in "Practical Path Guiding” in Production
+    // https://tom94.net/data/courses/vorba19guiding/vorba19guiding-chapter10.pdf
+    const Float m_jitter_prob;
+
 private: // hyperparameters
     // spatial tree sampling threshold, until a node qualifies for refinement
     const Float spatial_tree_thresh = 4000.f;
@@ -38,12 +57,7 @@ private: // hyperparameters
     const Float rho = 0.01f;
     // maximum number of children in leaf d-trees
     const size_t max_DTree_depth = 20;
-    // percentage of samples in render that are used for training
-    // 0.0 => disabled path guider (no training)
-    // 0.5 => 50% of the spp for the total render is dedicated for training
-    // 0.9 => 90% of the spp for the total render is dedicated for training
-    // >= 1.0 causes the final render to have 0 samples (probably not ideal)
-    const float training_budget; // set in constructor
+
     // total number of refinement iterations before training is complete
     size_t num_training_refinements; // set in initialize()
 
@@ -77,7 +91,7 @@ public: // public API
     void initialize(const uint32_t scene_spp, const ScalarBoundingBox3f &bbox);
 
     // query whether or not the path guider should be used at all
-    bool enabled() const { return training_budget > 0.f; }
+    bool enabled() const { return m_training_budget > 0.f; }
 
     // query whether or not the path guider is ready for sampling (inference)
     bool ready_for_sampling() const {
@@ -96,7 +110,7 @@ public: // public API
     uint32_t get_pass_spp(const uint32_t pass_idx) const;
 
     // return percentage of samples from total scene to be used for training
-    float get_training_budget() const { return training_budget; }
+    float get_training_budget() const { return m_training_budget; }
 
     // refine spatial tree from last buffer
     void perform_refinement();

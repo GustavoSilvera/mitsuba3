@@ -60,7 +60,9 @@ MI_VARIANT SamplingIntegrator<Float, Spectrum>::SamplingIntegrator(const Propert
     : Base(props) {
 
     m_block_size = props.get<uint32_t>("block_size", 0);
-    m_pathguider = new PathGuide<Float, Spectrum>(props.get<float>("pg_budget", 0.f));
+    m_pathguider = new PathGuide<Float, Spectrum>(
+        props.get<float>("pg_budget", 0.f),
+        props.get<float>("pg_jitter", 0.5f));
 
     // If a block size is specified, ensure that it is a power of two
     uint32_t block_size = math::round_to_power_of_two(m_block_size);

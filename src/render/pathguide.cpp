@@ -396,12 +396,26 @@ PathGuide<Float, Spectrum>::SpatialTree::get_direction_tree(
 
 //-------------------PathGuide-------------------//
 
+MI_VARIANT
+PathGuide<Float, Spectrum>::PathGuide(const float training_budget,
+                                      const float p_jitter)
+    : m_training_budget(training_budget), m_jitter_prob(p_jitter) {
+    if (m_training_budget < 0.f)
+        Log(Warn, "Path guide cannot train for negative samples. Disabling "
+                  "path guider.");
+    if (m_training_budget >= 1.f) {
+        Log(Warn, "Using entirety of sampling budget for training the path "
+                  "guider. This means none of the samples will be used for "
+                  "(inference) rendering the final image!");
+    }
+}
+
 MI_VARIANT void
 PathGuide<Float, Spectrum>::initialize(const uint32_t scene_spp,
                                        const ScalarBoundingBox3f &bbox) {
     // calculate the number of refinement operations to perform (each one with
     // 2x spp of before) to approximately match the training threshold
-    total_train_spp = static_cast<size_t>(scene_spp * training_budget);
+    total_train_spp = static_cast<size_t>(scene_spp * m_training_budget);
     // number of iterations ("render passes") where spp is doubled for training
     num_training_refinements = dr::log2i(total_train_spp);
     // any overflow from the desired training budget that will be included in
@@ -482,14 +496,13 @@ void PathGuide<Float, Spectrum>::add_radiance(
     Sampler<Float, Spectrum> *sampler) {
     if (dr::any_or<true>(!dr::isfinite(luminance) || luminance < 0.f))
         return;
-    Point3f newPos        = pos;
-    const Float weight    = 0.25f;
-    const Float pDoJitter = 0.5f; // probability of jittering the sample:
+    Point3f newPos     = pos;
+    const Float weight = 0.25f;
     Vector3f neigh_size(1, 1, 1);
     DTreeWrapper &exact_dir_tree = // without jitter
         spatial_tree.get_direction_tree(pos, &neigh_size);
     if (sampler != nullptr &&
-        dr::any_or<true>(sampler->next_1d() > pDoJitter)) {
+        dr::any_or<true>(sampler->next_1d() < m_jitter_prob)) {
         { // perform stochastic filtering on spatial tree
             // jitter within bounding box of leaf node containing pos
             Vector3f offset = neigh_size;
