@@ -31,120 +31,257 @@ template <typename Float, typename Spectrum>
 class MI_EXPORT_LIB PathGuide : public Object {
 public:
     MI_IMPORT_CORE_TYPES() // imports types such as Vector3f, Point3f, Color3f
+
     PathGuide(const float training_budget, const float p_jitter);
 
     MI_DECLARE_CLASS()
 
-private: // constructor parameters
-    // percentage of samples in render that are used for training
-    // 0.0 => disabled path guider (no training)
-    // 0.5 => 50% of the spp for the total render is dedicated for training
-    // 0.9 => 90% of the spp for the total render is dedicated for training
-    // >= 1.0 causes the final render to have 0 samples (probably not ideal)
+private: /* constructor parameters */
+    /**
+     * \brief percentage of samples in render that are used for training
+     *
+     * 0.0 => disabled path guider (no training)
+     * 0.5 => 50% of the spp for the total render is dedicated for training
+     * 0.9 => 90% of the spp for the total render is dedicated for training
+     * >= 1.0 causes the final render to have 0 samples (probably not ideal)
+     */
     const float m_training_budget;
 
-    // probability of jittering a sample within its spatial neighbourhood. This
-    // acts as a filter over the spatial domain to reduce artifacts caused by
-    // the boundary conditions of the spatial subdivisions.
-    // See "Stochastic Spatial Filter" in "Practical Path Guiding” in Production
-    // https://tom94.net/data/courses/vorba19guiding/vorba19guiding-chapter10.pdf
+    /**
+     * \brief Probability of jittering a sample within its spatial neighbourhood
+     *
+     * This acts as a filter over the spatial domain to reduce artifacts caused
+     * by the boundary conditions of the spatial subdivisions. See "Stochastic
+     * Spatial Filter" in "Practical Path Guiding” in Production [2]
+     */
     const Float m_jitter_prob;
 
-private: // hyperparameters
-    // spatial tree sampling threshold, until a node qualifies for refinement
+private: /* hyperparameters (from the paper recommendations)*/
+    /**
+     * \brief Spatial tree threshold, until a node qualifies for refinement.
+     *
+     * In the original (2017) paper [1] this parameter was recommended to be
+     * 12000, but in the follow-up (2019) [2] the improvements with the spatial
+     * and directional filtering allowed for a better learned approximation
+     * while avoiding artifacts (hence a smaller threshold of 4000)
+     */
     const Float spatial_tree_thresh = 4000.f;
-    // fraction of energy from the previous tree to use for refiment
-    const Float rho = 0.01f;
-    // maximum number of children in leaf d-trees
+
+    /**
+     * \brief Maximum number of children in leaf d-trees.
+     *
+     * "limiting the maximum depth of the quadtree to 20, which is sufficient
+     * for guiding towards extremely narrow radiance sources without precision
+     * issues" [1]
+     */
     const size_t max_DTree_depth = 20;
 
-    // total number of refinement iterations before training is complete
-    size_t num_training_refinements; // set in initialize()
+    /**
+     * \brief Fraction of energy from the previous tree to use for refiment
+     *
+     * "We found rho=0.01 to work well, which in practice results in an average
+     * of roughly 300 nodes per quadtree ...[and typically far below] the
+     * theoretical maximum of 4 * 20 / rho = 8000"[1]
+     */
+    const Float rho = 0.01f;
 
 private: // internal use
     // member variables used for internal representation
-    size_t refinement_iter = 0; // number of refinements (training passes)
-    size_t spp_overflow    = 0; // remaining spp not part of doubling
+    size_t refinement_iter = 0;      // number of refinements (training passes)
+    size_t num_training_refinements; // number of refinements for training
+    size_t spp_overflow = 0;         // any remaining spp from geometric series
 
-    // refines the SD-tree, then prepares for next iteration
+    /**
+     * \brief One step to refine the entire SD-tree
+     *
+     * Traverses through the tree and subdivides the leaves that surpass the
+     * weight threshold (passed in as a vairable)
+     */
     void refine(const Float);
 
-    // Variable for tracking intermediate radiance for path guiding
-    /// NOTE: this is thread_local so that these accumulations can occur in
-    //        parallel along various threads (each thread has its own storage)
-    //        and inline static comes from the requirement that the thread_local
-    //        members must be static. Overall this allows for T separate storage
-    //        instances of the vector to be allocated where T is #threads
+    /**
+     * \brief Variable for tracking intermediate radiance for path guiding.
+     *
+     * In cases where radiance is computed by accumulating throughput from the
+     * eye to the light source (rather than from the light source to the eye),
+     * some intermediate variables need to be tracked in order to calculate the
+     * radiance from any point along the path to the eventual light source.
+     *
+     * This is thread_local so that these accumulations can occur in parallel
+     * along various threads (each thread has its own storage) and inline static
+     * comes from the requirement that the thread_local members must be static.
+     *
+     * This could have instead been an automatic variable within each
+     * integrator's sample() method, but this approach is less intrusive albeit
+     * less intuitive upon first glance.
+     */
     thread_local inline static std::vector<
         std::tuple<Point3f, Vector3f, Spectrum, Spectrum, Spectrum, Float>>
         thru_vars;
 
-    // progress tracking
+    /**
+     * \brief Progress tracking of training process
+     *
+     * If we only updated the progress on every training pass, the progress
+     * meter would be updated in doubling-increments since the spp doubles on
+     * each pass. This is not very pleasant to look at since the first few
+     * finish nearly instantly, then the progress meter is stuck at 50% for
+     * ~half the time. By adding these internal variables we can track how many
+     * samples have gone through the training process compared to the total
+     * amount and update the progress tracker uniformally during training.
+     */
     ProgressReporter *progress           = nullptr; // train progress reporter
     size_t total_train_spp               = 0;       // total spp for training
     size_t screensize                    = 0;       // sensor resolution
     std::atomic<size_t> atomic_spp_count = 0;       // spp for progress tracking
     void update_progress();                         // after each (atomic) 1 spp
 
-public: // public API
-    // begin construction of the SD-tree
+public: /* public API */
+    /**
+     * \brief Provide run-time arguments for path guider initialization
+     */
     void initialize(const uint32_t scene_spp, const ScalarBoundingBox3f &bbox);
 
-    // query whether or not the path guider should be used at all
+    /**
+     * \brief Query whether or not the path guider should be used at all
+     *
+     * If the training budget <= 0% then we can safely assume the user does not
+     * want to use path guiding at all. So this is our disabled criteria.
+     */
     bool enabled() const { return m_training_budget > 0.f; }
 
-    // query whether or not the path guider is ready for sampling (inference)
+    /**
+     * \brief Query if the path guider is ready for sampling (inference)
+     *
+     * The path guider should only be ready for sampling past a certain number
+     * of training iterations. This could be a user-defined parameter.
+     */
     bool ready_for_sampling() const {
-        // "We train a sequence L1, L2, ... LM where L1 is estimated with just
-        // BSDF sampling and for all k > 1, Lk is esetimated by combining
-        // samples of LK-1 and the BSDF via multiple importance sampling."
+        /* "We train a sequence L1, L2, ... LM where L1 is estimated with just
+         * BSDF sampling and for all k > 1, Lk is esetimated by combining
+         * samples of LK-1 and the BSDF via multiple importance sampling"[1]
+         */
         return (refinement_iter >= 1);
     }
 
-    // query whether or not the path guider is finished training
+    /**
+     * \brief Query if the path guider is finished training.
+     *
+     * The path guider "training" consists of several iterative rendering passes
+     * that each refine the SD-tree used to approximate the incident radiance of
+     * the scene. With more refinements the approximation gets better but the
+     * spp ~doubles on each pass
+     */
     bool done_training() const {
         return (refinement_iter >= num_training_refinements);
     }
 
-    // get number of spp on a particular pass
+    /**
+     * \brief Returns the number of spp for training on a particular pass
+     *
+     * Typically, this follows the geometric-series 2^i as described in [1] but
+     * in case the desired training budget does not fall evenly in a
+     * power-of-two, there will be some overflow that can be either added to the
+     * final pass or constitute its own extra final pass.
+     */
     uint32_t get_pass_spp(const uint32_t pass_idx) const;
 
-    // return percentage of samples from total scene to be used for training
+    /**
+     * \brief Return percentage of samples from scene to be used for training
+     *
+     * A number from (0, 1) used to separate the total sampling budget into (1)
+     * training the path guider and (2) querying the path guider for the render.
+     */
     float get_training_budget() const { return m_training_budget; }
 
-    // refine spatial tree from last buffer
+    /**
+     * \brief Refine the SD-tree to conclude one training pass
+     *
+     * This method begins the next training iteration and refines the SD-tree by
+     * subdividing the leaves of the spatial-tree if they are large enough
+     */
     void perform_refinement();
 
-    // call once to allow the path guider to track training progress
+    /**
+     * \brief Call once to allow the path guider to track training progress
+     *
+     * Gives the path guider a progress reporter to update and the total sensor
+     * size (in pixels) for normalizing the progress
+     */
     inline void set_train_progress(ProgressReporter *p,
                                    const size_t num_pixels) {
         progress   = p;
         screensize = num_pixels;
     }
 
-    // to keep track of radiance in the lightfield
+    /**
+     * \brief Tracking a radiance sample in the 5D lightfield, used for training
+     *
+     * Adding radiance from the 5D (3D xyz + 2D dir) lightfield first traverses
+     * down the spatial tree to find the leaf containing a directional tree to
+     * add the sample. Optionally, the sample can be jittered to act as a
+     * stochastic filter and reduce artifacts [2]
+     */
     void add_radiance(const Point3f &pos, const Vector3f &dir,
                       const Float luminance,
                       Sampler<Float, Spectrum> *sampler = nullptr);
 
-    // keep track of throughput to calculate incident radiance at every boucne
+    /**
+     * \brief Track variables in throughput accumulation for incident radiance
+     *
+     * See path.cpp::sample() to see how the add_throughput method is used
+     */
     void add_throughput(const Point3f &pos, const Vector3f &dir,
                         const Spectrum &result, const Spectrum &throughput,
                         const Float woPdf);
 
-    // when the radiance is not computed recursively, it is nontrivial to get
-    // the incident radiance at every bounce. So this provides the means to
-    // store intermediate variables and recompute these quantities for training
+    /**
+     * \brief Calculate radiance from intermediate throughput variables
+     *
+     * When the radiance is not computed recursively, it is nontrivial to get
+     * the incident radiance at every bounce. So we need to store some
+     * intermediate variables and calculate the incident radiance from
+     * throughput for each bounce along the path.
+     */
     void calc_radiance_from_thru(Sampler<Float, Spectrum> *sampler);
 
-    // to (importance) sample a direction and its corresponding pdf
+    /**
+     * \brief To (importance) sample a direction according to the learned 5D
+     * lightfield.
+     *
+     * Returns both the sampled direction (Vec3) and the pdf of this sample
+     * (Float) in a tuple.
+     */
     std::pair<Vector3f, Float> sample(const Vector3f &pos,
                                       Point2f sample) const;
+
+    /**
+     * \brief Returns the pdf of sampling the direction (dir) from the position
+     * (pos) with the current path guiding system
+     */
     Float sample_pdf(const Point3f &pos, const Vector3f &dir) const;
 
-public:
-    // utility methods
+private: /* Utility Methods */
+    /**
+     * \brief Converting a 2D direction to a quadrant (0, 1, 2, 3)
+     *
+     * Quadrants are indexed like this
+     *  0.......1
+     *  ---------  0
+     *  | 0 | 1 |  .
+     *  ---------  .
+     *  | 2 | 3 |  .
+     *  ---------  1
+     */
     static size_t Angles2Quadrant(const Point2f &pos);
+
+    /**
+     * \brief Re-normalize a point within a quad back to (0,1)^2
+     *
+     * Takes a 2D point that lies within a quad (separated between {0, 0.5, 1}
+     * for x and y) and renormalizes the point to be within (0, 1) for x and y
+     * so this point can be used further down the tree.
+     */
     static Point2f NormalizeForQuad(const Point2f &pos, const size_t quad);
 
 private: // DirectionTree (and friends) declaration
@@ -239,19 +376,20 @@ private: // DirectionTree (and friends) declaration
             std::vector<DirNode> nodes;
         };
 
-        // keep track of current and previous direction trees in the same
-        // overarching "DTreeWrapper" wrapper to only need one binary search
-        // through the spatial tree to reach these leaves. The underlying
-        // spatial structure for both trees is the same regardless.
-
-        /*
-        Section 5.2: Memory Usage:
-
-        "because the spatial binary tree of L^k is merely a more refined version
-        of the spatial tree of L^{k−1}, it is straightforward to use the same
-        spatial tree for both distributions, where each leaf contains two
-        directional quadtrees; one for L^{k−1} and one for L^k
-        */
+        /**
+         * \brief keep track of current and previous direction trees in the same
+         * overarching "DTreeWrapper" wrapper to only need one binary search
+         * through the spatial tree to reach these leaves. The underlying
+         * spatial structure for both trees is the same regardless.
+         *
+         * From [1]:
+         * Section 5.2: Memory Usage:
+         *
+         * "because the spatial binary tree of L^k is merely a more refined
+         * version of the spatial tree of L^{k−1}, it is straightforward to use
+         * the same spatial tree for both distributions, where each leaf
+         * contains two directional quadtrees; one for L^{k−1} and one for L^k
+         */
         DirTree current, prev;
     };
 

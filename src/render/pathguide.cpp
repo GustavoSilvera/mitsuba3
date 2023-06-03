@@ -23,7 +23,17 @@ MI_VARIANT
 typename PathGuide<Float, Spectrum>::Point2f
 PathGuide<Float, Spectrum>::NormalizeForQuad(const Point2f &pos,
                                              const size_t quad) {
-    Point2f ret = dr::clamp(pos, 0.f, 1.f); // within bounds
+    // re-normalize the 2D direction back to (0, 1) from its quad
+    /**
+     * Quadrants are indexed like this
+     *  0.......1
+     *  ---------  0
+     *  | 0 | 1 |  .
+     *  ---------  .
+     *  | 2 | 3 |  .
+     *  ---------  1
+     */
+    Point2f ret = dr::clamp(pos, 0.f, 1.f);
     Assert(quad <= 3);
     if (quad == 0) // top left (quadrant 0)
     {
@@ -39,7 +49,7 @@ PathGuide<Float, Spectrum>::NormalizeForQuad(const Point2f &pos,
                    ret.x() <= 0.5f + dr::Epsilon<Float> &&
                    ret.y() >= 0.0f - dr::Epsilon<Float> &&
                    ret.y() <= 0.5f + dr::Epsilon<Float>));
-    ret = 2.f * ret; // map [0, 0.5] -> [0, 1]
+    ret = 2.f * ret; // map [0, 0.5] -> [0, 1] (re-normalize)
     // avoid degeneracies by clamping to (0, 1)
     return dr::clamp(ret, dr::Epsilon<Float>, dr::OneMinusEpsilon<Float>);
 }
@@ -192,22 +202,15 @@ bool PathGuide<Float, Spectrum>::DTreeWrapper::DirTree::DirNode::sample(
     size_t &quad, Float &r1) const {
     // r1 should be a random sample within (0, 1) that will get re-normalized
     // during this sampling process (to avoid drawing new samples)
-    const Float top_L = Float(data[0]); // atomic load quadrants
-    const Float top_R = Float(data[1]); // atomic load quadrants
-    const Float bot_L = Float(data[2]); // atomic load quadrants
-    const Float bot_R = Float(data[3]); // atomic load quadrants
+    const Float top_L = Float(data[0]);
+    const Float top_R = Float(data[1]);
+    const Float bot_L = Float(data[2]);
+    const Float bot_R = Float(data[3]);
     const Float total = top_L + top_R + bot_L + bot_R;
 
     // just use unit random, no data to sample from yet!
     if (dr::any_or<true>(total == 0.f))
         return false; // fail to sample
-
-    // NOTE: quadrants are indexed like this
-    // ---------
-    // | 0 | 1 |
-    // ---------
-    // | 2 | 3 |
-    // ---------
 
     // sample the loaded die that is the weighted quadrants according to a
     // discrete distribution from the data. Can probably also investigate
@@ -218,20 +221,16 @@ bool PathGuide<Float, Spectrum>::DTreeWrapper::DirTree::DirNode::sample(
     r1 = dr::clamp(r1, dr::Epsilon<Float>, dr::OneMinusEpsilon<Float>);
     const Float sample = r1 * total;
     if (dr::any_or<true>(sample < top_L)) {
-        // dice rolls top left
-        quad = 0;
+        quad = 0; // dice rolls top left
         r1   = sample / top_L;
     } else if (dr::any_or<true>(sample < top_L + top_R)) {
-        // dice rolls top right
-        quad = 1;
+        quad = 1; // dice rolls top right
         r1   = (sample - top_L) / top_R;
     } else if (dr::any_or<true>((sample < top_L + top_R + bot_L))) {
-        // dice rolls bottom left
-        quad = 2;
+        quad = 2; // dice rolls bottom left
         r1   = (sample - (top_L + top_R)) / bot_L;
     } else {
-        // dice rolls bottom right
-        quad = 3;
+        quad = 3; // dice rolls bottom right
         r1   = (sample - (top_L + top_R + bot_L)) / bot_R;
     }
     r1 = dr::clamp(r1, dr::Epsilon<Float>, dr::OneMinusEpsilon<Float>);
