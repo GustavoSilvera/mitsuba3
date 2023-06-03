@@ -10,13 +10,13 @@ size_t PathGuide<Float, Spectrum>::Angles2Quadrant(const Point2f &pos) {
     // takes the 2D location input and returns the corresponding quadrant
     auto cpos = dr::clamp(pos, 0.f, 1.f); // within bounds
 
-    if (dr::any_or<true>(cpos.x() < 0.5f && cpos.y() < 0.5f)) // top left
-        return 0;                                             // (quadrant 0)
-    else if (dr::any_or<true>(cpos.y() < 0.5f)) // must be top right
-        return 1;                               // (quadrant 1)
-    else if (dr::any_or<true>(cpos.x() < 0.5f)) // must be bottom left
-        return 2;                               // (quadrant 2)
-    return 3;                                   // (quadrant 3)
+    if (dr::all(cpos.x() < 0.5f && cpos.y() < 0.5f)) // top left
+        return 0;                                    // (quadrant 0)
+    else if (dr::all(cpos.y() < 0.5f))               // must be top right
+        return 1;                                    // (quadrant 1)
+    else if (dr::all(cpos.x() < 0.5f))               // must be bottom left
+        return 2;                                    // (quadrant 2)
+    return 3;                                        // (quadrant 3)
 }
 
 MI_VARIANT
@@ -112,8 +112,7 @@ void PathGuide<Float, Spectrum>::DTreeWrapper::reset(const size_t max_depth,
         const auto &other_node = s.tree->nodes[s.other_idx];
         for (size_t quad = 0; quad < other_node.data.size(); quad++) {
             const Float quad_sum = Float(other_node.data[quad]);
-            if (s.depth < max_depth &&
-                dr::any_or<true>(quad_sum > prev_sum * rho)) {
+            if (s.depth < max_depth && dr::all(quad_sum > prev_sum * rho)) {
                 // add child and check if parent
                 const size_t child_idx = current.nodes.size();
                 current.nodes.emplace_back(); // create the child!
@@ -167,7 +166,7 @@ Float PathGuide<Float, Spectrum>::DTreeWrapper::sample_pdf(
     // pdf starts out as 1/4pi (uniform across sphere)
     Float pdf = warp::square_to_uniform_sphere_pdf(dir);
     if (tree.nodes.size() == 0 ||
-        dr::any_or<true>(Float(tree.weight) == 0.f || Float(tree.sum) == 0.f))
+        dr::all(Float(tree.weight) == 0.f || Float(tree.sum) == 0.f))
         return pdf;
 
     // begin recursing into nodes
@@ -180,7 +179,7 @@ Float PathGuide<Float, Spectrum>::DTreeWrapper::sample_pdf(
         pos                   = NormalizeForQuad(pos, quad_idx);
 
         const Float quad_samples = Float(node->data[quad_idx]);
-        if (dr::any_or<true>(quad_samples <= 0.f))
+        if (dr::all(quad_samples <= 0.f))
             return 0.f; // invalid pdf
 
         // distribute this mean evenly for all "quads"
@@ -209,7 +208,7 @@ bool PathGuide<Float, Spectrum>::DTreeWrapper::DirTree::DirNode::sample(
     const Float total = top_L + top_R + bot_L + bot_R;
 
     // just use unit random, no data to sample from yet!
-    if (dr::any_or<true>(total == 0.f))
+    if (dr::all(total == 0.f))
         return false; // fail to sample
 
     // sample the loaded die that is the weighted quadrants according to a
@@ -220,13 +219,13 @@ bool PathGuide<Float, Spectrum>::DTreeWrapper::DirTree::DirNode::sample(
     // boundaries set by the data
     r1 = dr::clamp(r1, dr::Epsilon<Float>, dr::OneMinusEpsilon<Float>);
     const Float sample = r1 * total;
-    if (dr::any_or<true>(sample < top_L)) {
+    if (dr::all(sample < top_L)) {
         quad = 0; // dice rolls top left
         r1   = sample / top_L;
-    } else if (dr::any_or<true>(sample < top_L + top_R)) {
+    } else if (dr::all(sample < top_L + top_R)) {
         quad = 1; // dice rolls top right
         r1   = (sample - top_L) / top_R;
-    } else if (dr::any_or<true>((sample < top_L + top_R + bot_L))) {
+    } else if (dr::all((sample < top_L + top_R + bot_L))) {
         quad = 2; // dice rolls bottom left
         r1   = (sample - (top_L + top_R)) / bot_L;
     } else {
@@ -251,7 +250,7 @@ PathGuide<Float, Spectrum>::DTreeWrapper::sample_dir(Point2f &sample) const {
 
     // early out to indicate that this tree is invalid
     if (tree.nodes.size() == 0 ||
-        dr::any_or<true>(Float(tree.weight) == 0 || Float(tree.sum) == 0.f))
+        dr::all(Float(tree.weight) == 0 || Float(tree.sum) == 0.f))
         return warp::square_to_uniform_sphere(sample);
 
     // recurse into the tree
@@ -325,7 +324,7 @@ void PathGuide<Float, Spectrum>::SpatialTree::refine(const Float threshold) {
 
         // currently hit a leaf node, might want to subdivide it (refine)
         if (nodes[idx].bIsLeaf() &&
-            dr::any_or<true>(nodes[idx].dTree.get_weight() > threshold)) {
+            dr::all(nodes[idx].dTree.get_weight() > threshold)) {
             // splits the parent in 2, potentially creating more children
             subdivide(idx); // not thread safe!
         }
@@ -379,8 +378,8 @@ PathGuide<Float, Spectrum>::SpatialTree::get_direction_tree(
         const auto ax = nodes[idx].xyz_axis;
         Assert(ax <= 2); // x, y, z
 
-        size_t child_idx = 0;                // assume going to child 0
-        if (dr::any_or<true>(x[ax] > split)) // actually going to child 1
+        size_t child_idx = 0;       // assume going to child 0
+        if (dr::all(x[ax] > split)) // actually going to child 1
         {
             child_idx = 1;
             x[ax] -= split; // (0.5,1) -> (0,0.5)
@@ -493,15 +492,14 @@ MI_VARIANT
 void PathGuide<Float, Spectrum>::add_radiance(
     const Point3f &pos, const Vector3f &dir, const Float luminance,
     Sampler<Float, Spectrum> *sampler) {
-    if (dr::any_or<true>(!dr::isfinite(luminance) || luminance < 0.f))
+    if (dr::all(!dr::isfinite(luminance) || luminance < 0.f))
         return;
     Point3f newPos     = pos;
     const Float weight = 0.25f;
     Vector3f neigh_size(1, 1, 1);
     DTreeWrapper &exact_dir_tree = // without jitter
         spatial_tree.get_direction_tree(pos, &neigh_size);
-    if (sampler != nullptr &&
-        dr::any_or<true>(sampler->next_1d() < m_jitter_prob)) {
+    if (sampler != nullptr && dr::all(sampler->next_1d() < m_jitter_prob)) {
         { // perform stochastic filtering on spatial tree
             // jitter within bounding box of leaf node containing pos
             Vector3f offset = neigh_size;
@@ -569,7 +567,7 @@ void PathGuide<Float, Spectrum>::calc_radiance_from_thru(
         // add indirect lighting, o/w pathguide strongly prefers direct
         const auto &[o, d, path_radiance, _, thru, woPdf] = (*rev);
 
-        if (!final_found && dr::any_or<true>(lum(path_radiance) > 0.f)) {
+        if (!final_found && dr::all(lum(path_radiance) > 0.f)) {
             // once the latest path-radiance is computed (last non-zero
             // path-radiance) use this path radiance for the indirect
             // lighting of all previous bounces

@@ -300,12 +300,11 @@ public:
             throughput[rr_active] *= dr::rcp(dr::detach(rr_prob));
 
             if (pg.enabled() && !pg.done_training() &&
-                dr::any_or<true>(prev_bsdf_pdf > 0.f && !prev_bsdf_delta && valid_ray)) {
-                // add the intermediate values from throughput accumulation necessary
-                // for computing the incident radiance on each bounce
-                const_cast<PathGuide<Float, Spectrum> &>(pg)
-                    .add_throughput(ray.o, ray.d, result, throughput,
-                                    bsdf_sample.pdf);
+                dr::all(prev_bsdf_pdf > 0.f && !prev_bsdf_delta && valid_ray)) {
+                // add the intermediate values from throughput accumulation
+                // necessary for computing the incident radiance on each bounce
+                const_cast<PathGuide<Float, Spectrum> &>(pg).add_throughput(
+                    ray.o, ray.d, result, throughput, bsdf_sample.pdf);
             }
 
             active = active_next && (!rr_active || rr_continue) &&
@@ -332,12 +331,12 @@ public:
                       Sampler *sampler) const {
         Spectrum ret_weight     = bsdf_weight;
         BSDFSample3f ret_sample = bsdf_sample;
-        auto &pg = (*this->m_pathguider.get());
+        auto &pg                = (*this->m_pathguider.get());
 
         // if we sample a delta reflection, there is 0 probability of
         // path guiding, so ignore
         Bool delta_brdf = has_flag(bsdf_sample.sampled_type, BSDFFlags::Delta);
-        if (sampler == nullptr || dr::any_or<true>(delta_brdf))
+        if (sampler == nullptr || dr::all(delta_brdf))
             return { ret_sample, ret_weight };
 
         // flip a coin to enable mixture sampling between
@@ -348,7 +347,7 @@ public:
         Spectrum f_s      = 0.f; // bsdf evaluation f_s(x)
 
         Vector3f pg_wo;
-        if (dr::any_or<true>(sampler->next_1d() < alpha)) {
+        if (dr::all(sampler->next_1d() < alpha)) {
             // update the pathguide-recommended sample values
             std::tie(pg_wo, pg_pdf) = pg.sample(si.p, sampler->next_2d());
             // convert world-aligned dir to surface-aligned dir
@@ -371,7 +370,7 @@ public:
 
         // mix together the bsdf probability and the pg probability
         Float pdf_mixture = dr::lerp(bs_pdf, pg_pdf, alpha);
-        if (dr::any_or<true>(pdf_mixture > 0.f)) {
+        if (dr::all(pdf_mixture > 0.f)) {
             ret_weight     = (f_s / pdf_mixture);
             ret_sample.wo  = pg_wo;
             ret_sample.pdf = pdf_mixture;
