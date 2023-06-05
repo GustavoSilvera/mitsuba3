@@ -317,6 +317,7 @@ private:
             // saturating add (handles overflow)
             if (prev > data) { // overflow detected
                 data.store(std::numeric_limits<uint64_t>::max());
+                Log(Warn, "Quantized atomic float accumulator hit saturation!");
             }
         }
         void operator=(const Float in) {
@@ -397,26 +398,23 @@ private: // DirectionTree (and friends) declaration
                 }
             };
 
-            // assignment operator
+            // assignment operator (deepcopy)
             DirTree &operator=(const DirTree &other) {
                 max_depth = other.max_depth;
                 nodes     = other.nodes;
-                // assign atomics here
-                sum    = Float(other.sum); // load(std::memory_order_relaxed)
-                weight = Float(other.weight);
+                sum       = Float(other.sum);
+                weight    = Float(other.weight);
                 return *this;
             }
 
             // copy constructor
             DirTree(const DirTree &other)
                 : max_depth(other.max_depth), nodes(other.nodes) {
-                // assign atomics here
                 weight = Float(other.weight);
-                sum    = Float(other.sum); // load(std::memory_order_relaxed)
+                sum    = Float(other.sum);
             }
 
-            AtomicFloat<Float> weight;
-            AtomicFloat<Float> sum;
+            QuantizedAtomicFloatAccumulator weight, sum;
             size_t max_depth = 0;
             std::vector<DirNode> nodes;
         };

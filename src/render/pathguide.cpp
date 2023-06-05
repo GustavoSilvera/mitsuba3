@@ -76,7 +76,7 @@ void PathGuide<Float, Spectrum>::DTreeWrapper::add_sample(const Vector3f &dir,
         Assert(node != nullptr);
         const size_t quad_idx = Angles2Quadrant(pos);
         pos                   = NormalizeForQuad(pos, quad_idx);
-        node->data[quad_idx] += lum;
+        node->data[quad_idx] += lum; // see QuantizedAtomicFloatAccumulator
         if (node->bIsLeaf(quad_idx))
             break;
         size_t child_idx = node->children[quad_idx];
