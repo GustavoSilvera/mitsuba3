@@ -284,6 +284,51 @@ private: /* Utility Methods */
      */
     static Point2f NormalizeForQuad(const Point2f &pos, const size_t quad);
 
+private:
+    struct QuantizedAtomicFloatAccumulator {
+        // AtomicFloat but quantized integer accumulator to preserve
+        // floating-point associativity atomically
+        QuantizedAtomicFloatAccumulator() = default;
+        QuantizedAtomicFloatAccumulator(
+            const QuantizedAtomicFloatAccumulator &other) {
+            (*this) = other;
+        }
+        QuantizedAtomicFloatAccumulator &
+        operator=(const QuantizedAtomicFloatAccumulator &other) {
+            data.store(other.data.load());
+            return *this;
+        }
+        // convert back to Float with N decimal places
+        operator Float() const {
+            return Float(data.load(std::memory_order_relaxed) / k_scale);
+        }
+        static inline float to_float(Float in) {
+            float out = 0.f;
+            if constexpr (std::is_same_v<Float, float>) {
+                out = in;
+            } else { // assume vector of size 1
+                out = static_cast<float>(in.entry(0));
+            }
+            return out;
+        }
+        void operator+=(const Float other) {
+            uint64_t prev = data.load();
+            data += static_cast<uint64_t>(to_float(other) * k_scale);
+            // saturating add (handles overflow)
+            if (prev > data) { // overflow detected
+                data.store(std::numeric_limits<uint64_t>::max());
+            }
+        }
+        void operator=(const Float in) {
+            data.store(static_cast<uint64_t>(to_float(in) * k_scale));
+        }
+        // increasing the number of digits (k_scale) may cause
+        // addition-saturation sooner because fewer bits are reserved for the
+        // integer quantity (more for the decimal).
+        constexpr static float k_scale = 10000.f; // 4 decimal digits
+        std::atomic<uint64_t> data     = 0;
+    };
+
 private: // DirectionTree (and friends) declaration
     class DTreeWrapper {
     public:
@@ -323,7 +368,7 @@ private: // DirectionTree (and friends) declaration
 
             struct DirNode {
                 DirNode() = default;
-                std::array<AtomicFloat<Float>, 4> data;
+                std::array<QuantizedAtomicFloatAccumulator, 4> data;
                 std::array<size_t, 4> children{};
                 bool sample(size_t &quadrant, Float &r1) const;
                 bool bIsLeaf(size_t idx) const { return children[idx] == 0; }
