@@ -63,6 +63,8 @@ void PathGuide<Float, Spectrum>::DTreeWrapper::add_sample(const Vector3f &dir,
     auto &tree  = current; // only adding samples to the current (building) tree
     Point2f pos = warp::uniform_sphere_to_square(dir);
     tree.weight += weight;
+    if (dr::all(lum == 0.f))
+        return; // no need to add 0 luminance to all the tree nodes
     tree.sum += lum;
 
     // should always have a root node!
