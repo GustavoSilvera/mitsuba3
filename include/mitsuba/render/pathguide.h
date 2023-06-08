@@ -108,7 +108,7 @@ public: /* public API */
      * size (in pixels) for normalizing the progress
      */
     inline void set_train_progress(ProgressReporter *p,
-                                   const size_t num_pixels) {
+                                   const uint32_t num_pixels) {
         progress   = p;
         screensize = num_pixels;
     }
@@ -172,7 +172,7 @@ private: /* Utility Methods */
      *  | 2 | 3 |  .
      *  ---------  1
      */
-    static size_t Angles2Quadrant(const Point2f &pos);
+    static uint32_t Angles2Quadrant(const Point2f &pos);
 
     /**
      * \brief Re-normalize a point within a quad back to (0,1)^2
@@ -181,7 +181,7 @@ private: /* Utility Methods */
      * for x and y) and renormalizes the point to be within (0, 1) for x and y
      * so this point can be used further down the tree.
      */
-    static Point2f NormalizeForQuad(const Point2f &pos, const size_t quad);
+    static Point2f NormalizeForQuad(const Point2f &pos, const uint32_t quad);
 
 private: /* constructor parameters */
     /**
@@ -221,7 +221,7 @@ private: /* hyperparameters (from the paper recommendations)*/
      * for guiding towards extremely narrow radiance sources without precision
      * issues" [1]
      */
-    const size_t max_DTree_depth = 20;
+    const uint32_t max_DTree_depth = 20;
 
     /**
      * \brief Fraction of energy from the previous tree to use for refiment
@@ -234,9 +234,9 @@ private: /* hyperparameters (from the paper recommendations)*/
 
 private: /* Internal implementation */
     /** \brief member variables used for internal representation */
-    size_t refinement_iter = 0;      // number of refinements (training passes)
-    size_t num_training_refinements; // number of refinements for training
-    size_t spp_overflow = 0;         // any remaining spp from geometric series
+    uint32_t refinement_iter = 0; // number of refinements (training passes)
+    uint32_t num_training_refinements; // number of refinements for training
+    uint32_t spp_overflow = 0; // any remaining spp from geometric series
 
     /**
      * \brief One step to refine the entire SD-tree
@@ -277,11 +277,11 @@ private: /* Internal implementation */
      * samples have gone through the training process compared to the total
      * amount and update the progress tracker uniformally during training.
      */
-    ProgressReporter *progress           = nullptr; // train progress reporter
-    size_t total_train_spp               = 0;       // total spp for training
-    size_t screensize                    = 0;       // sensor resolution
-    std::atomic<size_t> atomic_spp_count = 0;       // spp for progress tracking
-    void update_progress();                         // after each (atomic) 1 spp
+    ProgressReporter *progress             = nullptr; // train progress reporter
+    uint32_t total_train_spp               = 0;       // total spp for training
+    uint32_t screensize                    = 0;       // sensor resolution
+    std::atomic<uint32_t> atomic_spp_count = 0; // spp for progress tracking
+    void update_progress();                     // after each (atomic) 1 spp
 
 private: /* Quantized Atomic Float Accumulator */
     /**
@@ -380,7 +380,7 @@ private: /* Quantized Atomic Float Accumulator */
 private: /* DirectionTree (and friends) declaration */
     class DTreeWrapper {
     public:
-        void reset(size_t max_depth, Float rho);
+        void reset(uint32_t max_depth, Float rho);
         void build();
 
         Float get_weight() const {
@@ -417,9 +417,9 @@ private: /* DirectionTree (and friends) declaration */
             struct DirNode {
                 DirNode() = default;
                 std::array<QuantizedAtomicFloatAccumulator, 4> data;
-                std::array<size_t, 4> children{};
-                bool sample(size_t &quadrant, Float &r1) const;
-                bool bIsLeaf(size_t idx) const { return children[idx] == 0; }
+                std::array<uint32_t, 4> children{};
+                bool sample(uint32_t &quadrant, Float &r1) const;
+                bool bIsLeaf(uint32_t idx) const { return children[idx] == 0; }
                 Float sum() const {
                     Float total = 0.f;
                     for (const auto &x : data)
@@ -433,13 +433,13 @@ private: /* DirectionTree (and friends) declaration */
                 }
                 DirNode &operator=(const DirNode &other) {
                     children = other.children;
-                    for (size_t i = 0; i < data.size(); i++) {
+                    for (uint32_t i = 0; i < data.size(); i++) {
                         data[i] = Float(other.data[i]);
                     }
                     return *this;
                 }
                 DirNode(const DirNode &other) : children(other.children) {
-                    for (size_t i = 0; i < data.size(); i++) {
+                    for (uint32_t i = 0; i < data.size(); i++) {
                         data[i] = Float(other.data[i]);
                     }
                 }
@@ -462,7 +462,7 @@ private: /* DirectionTree (and friends) declaration */
             }
 
             QuantizedAtomicFloatAccumulator weight, sum;
-            size_t max_depth = 0;
+            uint32_t max_depth = 0;
             std::vector<DirNode> nodes;
         };
 
@@ -490,28 +490,26 @@ private: /* SpatialTree (whose leaves are DirectionTrees) declaration */
         ScalarBoundingBox3f bounds;
         void begin_next_tree_iteration();
         void refine(const Float sample_threshold);
-        void reset_leaves(const size_t max_depth, const Float rho);
+        void reset_leaves(const uint32_t max_depth, const Float rho);
 
-        DTreeWrapper &get_direction_tree(const Point3f &pos,
-                                         Vector3f *size = nullptr) {
+        DTreeWrapper &get_leaf(const Point3f &pos, Vector3f *size = nullptr) {
             return const_cast<DTreeWrapper &>(
-                const_cast<const SpatialTree *>(this)->get_direction_tree(
-                    pos, size));
+                const_cast<const SpatialTree *>(this)->get_leaf(pos, size));
         }
-        const DTreeWrapper &get_direction_tree(const Point3f &pos,
-                                               Vector3f *size = nullptr) const;
+        const DTreeWrapper &get_leaf(const Point3f &pos,
+                                     Vector3f *size = nullptr) const;
 
     private:
         struct SNode // spatial-tree-node
         {
-            class DTreeWrapper dTree;         // direction tree
-            std::array<size_t, 2> children{}; // 2 children ids in binary tree
+            class DTreeWrapper dTree;           // direction tree
+            std::array<uint32_t, 2> children{}; // 2 children ids in binary tree
             uint8_t xyz_axis{}; // (0:x, 1:y, 2:z) which axis to split on
             // equal children => no children => is a leaf node
             inline bool bIsLeaf() const { return children[0] == children[1]; }
         };
 
-        void subdivide(const size_t parent_idx);
+        void subdivide(const uint32_t parent_idx);
         // representation of the binary tree through an array of indices
         std::vector<SNode> nodes;
     } spatial_tree;

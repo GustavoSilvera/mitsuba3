@@ -495,7 +495,7 @@ MI_VARIANT void SamplingIntegrator<Float, Spectrum>::preprocess(Scene *scene,
         // variables for the path guider to update
         auto progress                   = new ProgressReporter("Training PG");
         const ScalarVector2u &film_size = sensor->film()->crop_size();
-        const size_t num_pixels         = film_size.x() * film_size.y();
+        const uint32_t num_pixels       = film_size.x() * film_size.y();
         m_pathguider->set_train_progress(progress, num_pixels);
 
         // silence verbosity for the following render() calls
