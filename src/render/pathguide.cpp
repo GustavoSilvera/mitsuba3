@@ -89,15 +89,15 @@ void PathGuide<Float, Spectrum>::DTreeWrapper::reset(const uint32_t max_depth,
                                                      const Float rho) {
     // clear and re-initialize the nodes
     current.nodes.clear();
-    current.nodes.resize(1);
+    current.nodes.resize(1); // ensure a root node is present
     current.max_depth = 0;
     current.weight    = 0;
     current.sum       = 0.f;
     struct StackItem {
-        uint32_t node_idx;
-        uint32_t other_idx;
-        DTreeWrapper::DirTree *tree;
-        uint32_t depth;
+        uint32_t node_idx;           // index of node in current tree
+        uint32_t source_idx;         // index of node in source tree
+        DTreeWrapper::DirTree *tree; // source tree
+        uint32_t depth = 0;          // recursion depth
     };
 
     std::stack<StackItem> stack;
@@ -110,11 +110,10 @@ void PathGuide<Float, Spectrum>::DTreeWrapper::reset(const uint32_t max_depth,
 
         current.max_depth = std::max(current.max_depth, s.depth);
         Assert(s.tree != nullptr);
-        Assert(s.other_idx < s.tree->nodes.size());
-        // always index into the s.tree's nodes rather than taking a pointer/ref
-        // because this array may get reallocated when creating new children;
-        // invalidating any pointers.
-        auto source_node = [s]() { return s.tree->nodes[s.other_idx]; };
+        Assert(s.source_idx < s.tree->nodes.size());
+        // always index into the the nodes array rather than taking a
+        // pointer/ref because it may get reallocated when creating new children
+        auto source_node = [s]() { return s.tree->nodes[s.source_idx]; };
         for (uint32_t quad = 0; quad < 4; quad++) {
             const Float quad_sum = Float(source_node().data[quad]);
             if (s.depth < max_depth && dr::all(quad_sum > prev_sum * rho)) {
@@ -137,11 +136,11 @@ void PathGuide<Float, Spectrum>::DTreeWrapper::reset(const uint32_t max_depth,
                 // create the child (possibly reallocating the array)
                 current.nodes.emplace_back();
                 // distribute the parent's sum evenly over the child's 4 quads
-                current.nodes[child].data_fill(quad_sum / 4.f);
+                for (auto &quad_data : current.nodes[child].data)
+                    quad_data = quad_sum / 4.f;
 
-                if (current.nodes.size() >
-                    std::numeric_limits<uint32_t>::max()) {
-                    Log(Error, "DTreeReset hit max children count!");
+                if (current.nodes.size() > std::numeric_limits<int>::max()) {
+                    Log(Error, "DTreeWrapper::reset hit max children count!");
                     stack = std::stack<StackItem>();
                     break;
                 }
@@ -151,7 +150,8 @@ void PathGuide<Float, Spectrum>::DTreeWrapper::reset(const uint32_t max_depth,
 
     // now set all the new energy to 0
     for (auto &node : current.nodes) {
-        node.data_fill(0.f);
+        for (auto &quad_data : node.data)
+            quad_data = 0.f;
     }
 }
 
@@ -187,9 +187,14 @@ Float PathGuide<Float, Spectrum>::DTreeWrapper::sample_pdf(
         if (dr::all(quad_samples <= 0.f))
             return 0.f; // invalid pdf
 
+        // compute the data sum of the 4 quads
+        Float sum = 0.f;
+        for (const auto &q : node->data)
+            sum += Float(q);
+
         // distribute this mean evenly for all "quads"
-        // equivlaent to scaling by 4x since each quadrant has area 1/4
-        pdf *= (node->data.size() * quad_samples) / node->sum();
+        // equivlaent to scaling by 4x since each quadrant has 1/4 unit area
+        pdf *= (4.f * quad_samples) / sum;
 
         if (node->bIsLeaf(quad_idx))
             break;

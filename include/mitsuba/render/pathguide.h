@@ -383,27 +383,21 @@ private: /* DirectionTree (and friends) declaration */
         void reset(uint32_t max_depth, Float rho);
         void build();
 
-        Float get_weight() const {
-            return Float(current.weight); // atomic load
-        }
-
-        void set_weight(const Float weight) {
-            current.weight = weight; // atomic store
-        }
-
+        /** \brief Getter for the main weight of the current tree */
+        Float get_weight() const { return Float(current.weight); }
+        /** \brief Setter for the main weight of the current tree */
+        void set_weight(const Float weight) { current.weight = weight; }
+        /** \brief Sampling the pdf of a particular direction in this tree */
         Float sample_pdf(const Vector3f &dir) const;
+        /** \brief Sampling a direction in this angular domain */
         Vector3f sample_dir(Point2f &sample) const;
-
+        /** \brief Adding data to the directional tree */
         void add_sample(const Vector3f &dir, const Float lum,
                         const Float weight);
 
     private:
         struct DirTree {
-            DirTree() {
-                nodes.resize(1);
-                weight = 0.f;
-                sum    = 0.f;
-            }
+            DirTree() { nodes.resize(1); } // ensure root node exists
 
             struct DirNode {
                 DirNode() = default;
@@ -411,46 +405,7 @@ private: /* DirectionTree (and friends) declaration */
                 std::array<uint32_t, 4> children{};
                 bool sample(uint32_t &quadrant, Float &r1) const;
                 bool bIsLeaf(uint32_t idx) const { return children[idx] == 0; }
-                Float sum() const {
-                    Float total = 0.f;
-                    for (const auto &x : data)
-                        total += Float(x); // x.load(std::memory_order_relaxed)
-                    return total;
-                }
-                void data_fill(const Float new_data) {
-                    for (auto &x : data) {
-                        x = new_data; // atomic store
-                    }
-                }
-                DirNode &operator=(const DirNode &other) {
-                    children = other.children;
-                    for (uint32_t i = 0; i < data.size(); i++) {
-                        data[i] = Float(other.data[i]);
-                    }
-                    return *this;
-                }
-                DirNode(const DirNode &other) : children(other.children) {
-                    for (uint32_t i = 0; i < data.size(); i++) {
-                        data[i] = Float(other.data[i]);
-                    }
-                }
             };
-
-            // assignment operator (deepcopy)
-            DirTree &operator=(const DirTree &other) {
-                max_depth = other.max_depth;
-                nodes     = other.nodes;
-                sum       = Float(other.sum);
-                weight    = Float(other.weight);
-                return *this;
-            }
-
-            // copy constructor
-            DirTree(const DirTree &other)
-                : max_depth(other.max_depth), nodes(other.nodes) {
-                weight = Float(other.weight);
-                sum    = Float(other.sum);
-            }
 
             QuantizedAtomicFloatAccumulator weight, sum;
             uint32_t max_depth = 0;
