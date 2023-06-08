@@ -111,30 +111,33 @@ void PathGuide<Float, Spectrum>::DTreeWrapper::reset(const size_t max_depth,
         current.max_depth = std::max(current.max_depth, s.depth);
         Assert(s.tree != nullptr);
         Assert(s.other_idx < s.tree->nodes.size());
-        const auto &other_node = s.tree->nodes[s.other_idx];
-        for (size_t quad = 0; quad < other_node.data.size(); quad++) {
-            const Float quad_sum = Float(other_node.data[quad]);
+        // always index into the s.tree's nodes rather than taking a pointer/ref
+        // because this array may get reallocated when creating new children;
+        // invalidating any pointers.
+        auto source_node = [s]() { return s.tree->nodes[s.other_idx]; };
+        for (size_t quad = 0; quad < 4; quad++) {
+            const Float quad_sum = Float(source_node().data[quad]);
             if (s.depth < max_depth && dr::all(quad_sum > prev_sum * rho)) {
-                // add child and check if parent
-                const size_t child_idx = current.nodes.size();
-                current.nodes.emplace_back(); // create the child!
-                auto &new_node = current.nodes.back();
+                // prepare for adding a new child
+                const size_t child = current.nodes.size();
+                // push the child onto the stack if the quadrant is not a leaf
+                // of the source node. The source node cannot be a leaf iff it
+                // comes from the previous tree.
 
-                if (!other_node.bIsLeaf(quad)) {
-                    // must be because other node comes from last tree
+                if (!source_node().bIsLeaf(quad)) {
                     Assert(s.tree == &prev);
-                    stack.push({ child_idx, other_node.children[quad], s.tree,
-                                 s.depth + 1 });
+                    size_t other = source_node().children[quad];
+                    stack.push({ child, other, s.tree, s.depth + 1 });
                 } else {
-                    // is a leaf, from c tree or the previous
-                    stack.push({ child_idx, child_idx, &current, s.depth + 1 });
+                    stack.push({ child, child, &current, s.depth + 1 });
                 }
 
-                // ensure this child has a parent!
-                current.nodes[s.node_idx].children[quad] = child_idx;
-
-                // distribute evenly over 4 quads
-                new_node.data_fill(quad_sum / 4.f);
+                // ensure the child has a parent assigned to it
+                current.nodes[s.node_idx].children[quad] = current.nodes.size();
+                // create the child (possibly reallocating the array)
+                current.nodes.emplace_back();
+                // distribute the parent's sum evenly over the child's 4 quads
+                current.nodes[child].data_fill(quad_sum / 4.f);
 
                 if (current.nodes.size() >
                     std::numeric_limits<uint32_t>::max()) {

@@ -285,9 +285,19 @@ private: /* Utility Methods */
     static Point2f NormalizeForQuad(const Point2f &pos, const size_t quad);
 
 private:
+    /**
+     * \brief Quantized float data structure for atomic positive accumulation
+     *
+     * Like AtomicFloat but quantizing the floating point value into a
+     * fixed-precision integer accumulator to preserve addition associativity.
+     * Otherwise there may be indeterminism when atomically adding floats just
+     * by the order in which they were (atomically) added.
+     *
+     * Note this class is only designed for summing positive floating point
+     * values such as luminance/radiance. Some assumptions are therefore used
+     * for representing the quantized (positive) float and detecting overflow.
+     */
     struct QuantizedAtomicFloatAccumulator {
-        // AtomicFloat but quantized integer accumulator to preserve
-        // floating-point associativity atomically
         QuantizedAtomicFloatAccumulator() = default;
         QuantizedAtomicFloatAccumulator(
             const QuantizedAtomicFloatAccumulator &other) {
@@ -311,18 +321,34 @@ private:
             }
             return out;
         }
+        static inline uint64_t quantize(const Float num) {
+            return static_cast<uint64_t>(to_float(num) * k_scale);
+        }
         void operator+=(const Float other) {
-            uint64_t prev = data.load();
-            data += static_cast<uint64_t>(to_float(other) * k_scale);
-            // saturating add (handles overflow)
-            if (prev > data) { // overflow detected
-                data.store(std::numeric_limits<uint64_t>::max());
-                Log(Warn, "Quantized atomic float accumulator hit saturation!");
-            }
+            if (dr::all(other < 0))
+                Log(Warn, "Quantized atomic float accumulator is only designed "
+                          "to add positive floating values.");
+            if (dr::all(other == 0.f))
+                return; // no-op on adding 0
+            const uint64_t summand = quantize(other);
+            uint64_t prev          = data.load();
+            // the following do-while loop performs a saturating-atomic-add
+            // where we ensure (through the compare_exchange) that the value of
+            // data has not been changed by another thread when doing our
+            // saturation checks.
+            do {
+                uint64_t new_sum = prev + summand;
+                // saturating add (handles overflow)
+                if (prev > new_sum) { // overflow detected
+                    data.store(std::numeric_limits<uint64_t>::max());
+                    Log(Warn, "Quantized atomic float hit saturation!");
+                    return;
+                }
+                // ensures the value of data hasn't changed from prev since we
+                // last loaded it, or we run through the saturation check again
+            } while (!data.compare_exchange_weak(prev, prev + summand));
         }
-        void operator=(const Float in) {
-            data.store(static_cast<uint64_t>(to_float(in) * k_scale));
-        }
+        void operator=(const Float in) { data.store(quantize(in)); }
         // increasing the number of digits (k_scale) may cause
         // addition-saturation sooner because fewer bits are reserved for the
         // integer quantity (more for the decimal).
