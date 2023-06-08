@@ -1,6 +1,5 @@
 #pragma once
 
-#include <mitsuba/core/atomic.h>    // AtomicFloat
 #include <mitsuba/core/bbox.h>      // ScalarBoundingBox3f
 #include <mitsuba/core/object.h>    // Object
 #include <mitsuba/core/progress.h>  // Progress
@@ -35,106 +34,6 @@ public:
     PathGuide(const float training_budget, const float p_jitter);
 
     MI_DECLARE_CLASS()
-
-private: /* constructor parameters */
-    /**
-     * \brief percentage of samples in render that are used for training
-     *
-     * 0.0 => disabled path guider (no training)
-     * 0.5 => 50% of the spp for the total render is dedicated for training
-     * 0.9 => 90% of the spp for the total render is dedicated for training
-     * >= 1.0 causes the final render to have 0 samples (probably not ideal)
-     */
-    const float m_training_budget;
-
-    /**
-     * \brief Probability of jittering a sample within its spatial neighbourhood
-     *
-     * This acts as a filter over the spatial domain to reduce artifacts caused
-     * by the boundary conditions of the spatial subdivisions. See "Stochastic
-     * Spatial Filter" in "Practical Path Guiding” in Production [2]
-     */
-    const Float m_jitter_prob;
-
-private: /* hyperparameters (from the paper recommendations)*/
-    /**
-     * \brief Spatial tree threshold, until a node qualifies for refinement.
-     *
-     * In the original (2017) paper [1] this parameter was recommended to be
-     * 12000, but in the follow-up (2019) [2] the improvements with the spatial
-     * and directional filtering allowed for a better learned approximation
-     * while avoiding artifacts (hence a smaller threshold of 4000)
-     */
-    const Float spatial_tree_thresh = 4000.f;
-
-    /**
-     * \brief Maximum number of children in leaf d-trees.
-     *
-     * "limiting the maximum depth of the quadtree to 20, which is sufficient
-     * for guiding towards extremely narrow radiance sources without precision
-     * issues" [1]
-     */
-    const size_t max_DTree_depth = 20;
-
-    /**
-     * \brief Fraction of energy from the previous tree to use for refiment
-     *
-     * "We found rho=0.01 to work well, which in practice results in an average
-     * of roughly 300 nodes per quadtree ...[and typically far below] the
-     * theoretical maximum of 4 * 20 / rho = 8000"[1]
-     */
-    const Float rho = 0.01f;
-
-private: // internal use
-    // member variables used for internal representation
-    size_t refinement_iter = 0;      // number of refinements (training passes)
-    size_t num_training_refinements; // number of refinements for training
-    size_t spp_overflow = 0;         // any remaining spp from geometric series
-
-    /**
-     * \brief One step to refine the entire SD-tree
-     *
-     * Traverses through the tree and subdivides the leaves that surpass the
-     * weight threshold (passed in as a vairable)
-     */
-    void refine(const Float);
-
-    /**
-     * \brief Variable for tracking intermediate radiance for path guiding.
-     *
-     * In cases where radiance is computed by accumulating throughput from the
-     * eye to the light source (rather than from the light source to the eye),
-     * some intermediate variables need to be tracked in order to calculate the
-     * radiance from any point along the path to the eventual light source.
-     *
-     * This is thread_local so that these accumulations can occur in parallel
-     * along various threads (each thread has its own storage) and inline static
-     * comes from the requirement that the thread_local members must be static.
-     *
-     * This could have instead been an automatic variable within each
-     * integrator's sample() method, but this approach is less intrusive albeit
-     * less intuitive upon first glance.
-     */
-    thread_local inline static std::vector<
-        std::tuple<Point3f, Vector3f, Spectrum, Spectrum, Spectrum, Float>>
-        thru_vars;
-
-    /**
-     * \brief Progress tracking of training process
-     *
-     * If we only updated the progress on every training pass, the progress
-     * meter would be updated in doubling-increments since the spp doubles on
-     * each pass. This is not very pleasant to look at since the first few
-     * finish nearly instantly, then the progress meter is stuck at 50% for
-     * ~half the time. By adding these internal variables we can track how many
-     * samples have gone through the training process compared to the total
-     * amount and update the progress tracker uniformally during training.
-     */
-    ProgressReporter *progress           = nullptr; // train progress reporter
-    size_t total_train_spp               = 0;       // total spp for training
-    size_t screensize                    = 0;       // sensor resolution
-    std::atomic<size_t> atomic_spp_count = 0;       // spp for progress tracking
-    void update_progress();                         // after each (atomic) 1 spp
 
 public: /* public API */
     /**
@@ -284,14 +183,115 @@ private: /* Utility Methods */
      */
     static Point2f NormalizeForQuad(const Point2f &pos, const size_t quad);
 
-private:
+private: /* constructor parameters */
+    /**
+     * \brief percentage of samples in render that are used for training
+     *
+     * 0.0 => disabled path guider (no training)
+     * 0.5 => 50% of the spp for the total render is dedicated for training
+     * 0.9 => 90% of the spp for the total render is dedicated for training
+     * >= 1.0 causes the final render to have 0 samples (probably not ideal)
+     */
+    const float m_training_budget;
+
+    /**
+     * \brief Probability of jittering a sample within its spatial neighbourhood
+     *
+     * This acts as a filter over the spatial domain to reduce artifacts caused
+     * by the boundary conditions of the spatial subdivisions. See "Stochastic
+     * Spatial Filter" in "Practical Path Guiding” in Production [2]
+     */
+    const Float m_jitter_prob;
+
+private: /* hyperparameters (from the paper recommendations)*/
+    /**
+     * \brief Spatial tree threshold, until a node qualifies for refinement.
+     *
+     * In the original (2017) paper [1] this parameter was recommended to be
+     * 12000, but in the follow-up (2019) [2] the improvements with the spatial
+     * and directional filtering allowed for a better learned approximation
+     * while avoiding artifacts (hence a smaller threshold of 4000)
+     */
+    const Float spatial_tree_thresh = 4000.f;
+
+    /**
+     * \brief Maximum number of children in leaf d-trees.
+     *
+     * "limiting the maximum depth of the quadtree to 20, which is sufficient
+     * for guiding towards extremely narrow radiance sources without precision
+     * issues" [1]
+     */
+    const size_t max_DTree_depth = 20;
+
+    /**
+     * \brief Fraction of energy from the previous tree to use for refiment
+     *
+     * "We found rho=0.01 to work well, which in practice results in an average
+     * of roughly 300 nodes per quadtree ...[and typically far below] the
+     * theoretical maximum of 4 * 20 / rho = 8000"[1]
+     */
+    const Float rho = 0.01f;
+
+private: /* Internal implementation */
+    /** \brief member variables used for internal representation */
+    size_t refinement_iter = 0;      // number of refinements (training passes)
+    size_t num_training_refinements; // number of refinements for training
+    size_t spp_overflow = 0;         // any remaining spp from geometric series
+
+    /**
+     * \brief One step to refine the entire SD-tree
+     *
+     * Traverses through the tree and subdivides the leaves that surpass the
+     * weight threshold (passed in as a vairable)
+     */
+    void refine(const Float);
+
+    /**
+     * \brief Variable for tracking intermediate radiance for path guiding.
+     *
+     * In cases where radiance is computed by accumulating throughput from the
+     * eye to the light source (rather than from the light source to the eye),
+     * some intermediate variables need to be tracked in order to calculate the
+     * radiance from any point along the path to the eventual light source.
+     *
+     * This is thread_local so that these accumulations can occur in parallel
+     * along various threads (each thread has its own storage) and inline static
+     * comes from the requirement that the thread_local members must be static.
+     *
+     * This could have instead been an automatic variable within each
+     * integrator's sample() method, but this approach is less intrusive albeit
+     * less intuitive upon first glance.
+     */
+    thread_local inline static std::vector<
+        std::tuple<Point3f, Vector3f, Spectrum, Spectrum, Spectrum, Float>>
+        thru_vars;
+
+    /**
+     * \brief Progress tracking of training process
+     *
+     * If we only updated the progress on every training pass, the progress
+     * meter would be updated in doubling-increments since the spp doubles on
+     * each pass. This is not very pleasant to look at since the first few
+     * finish nearly instantly, then the progress meter is stuck at 50% for
+     * ~half the time. By adding these internal variables we can track how many
+     * samples have gone through the training process compared to the total
+     * amount and update the progress tracker uniformally during training.
+     */
+    ProgressReporter *progress           = nullptr; // train progress reporter
+    size_t total_train_spp               = 0;       // total spp for training
+    size_t screensize                    = 0;       // sensor resolution
+    std::atomic<size_t> atomic_spp_count = 0;       // spp for progress tracking
+    void update_progress();                         // after each (atomic) 1 spp
+
+private: /* Quantized Atomic Float Accumulator */
     /**
      * \brief Quantized float data structure for atomic positive accumulation
      *
-     * Like AtomicFloat but quantizing the floating point value into a
-     * fixed-precision integer accumulator to preserve addition associativity.
-     * Otherwise there may be indeterminism when atomically adding floats just
-     * by the order in which they were (atomically) added.
+     * Like AtomicFloat (see mitsuba/core/atomic.h) but quantizing the floating
+     * point value into a fixed-precision integer accumulator to preserve
+     * addition associativity. Otherwise there may be indeterminism when
+     * atomically adding floats just by the order in which they were
+     * (atomically) added.
      *
      * Note this class is only designed for summing positive floating point
      * values such as luminance/radiance. Some assumptions are therefore used
@@ -308,11 +308,30 @@ private:
             data.store(other.data.load());
             return *this;
         }
-        // convert back to Float with N decimal places
+
+        /**
+         * \brief Convert between continuous floating point and fixed-point
+         *
+         * Convert a Float to a quantized uint64_t by including the last N
+         * decimal places in the integral component, then truncating to a
+         * uint64_t. Note this may fail with overflow if the floating point
+         * number times the k_scale (decimal precision) exceeds 2^64-1
+         */
+        static inline uint64_t quantize(const Float num) {
+            const float to_quantize = to_float(num) * k_scale;
+            if (to_quantize > std::numeric_limits<uint64_t>::max()) {
+                Log(Warn, "Quantizing %f results in an overflow", num);
+            }
+            return static_cast<uint64_t>(to_quantize);
+        }
+
+        /** \brief "de-quantize" back to Float with N decimal places */
         operator Float() const {
             return Float(data.load(std::memory_order_relaxed) / k_scale);
         }
-        static inline float to_float(Float in) {
+
+        /** \brief helper method converting Float (template) to normal float */
+        static inline float to_float(const Float in) {
             float out = 0.f;
             if constexpr (std::is_same_v<Float, float>) {
                 out = in;
@@ -321,9 +340,8 @@ private:
             }
             return out;
         }
-        static inline uint64_t quantize(const Float num) {
-            return static_cast<uint64_t>(to_float(num) * k_scale);
-        }
+
+        /** \brief positive atomic saturating accumulation */
         void operator+=(const Float other) {
             if (dr::all(other < 0))
                 Log(Warn, "Quantized atomic float accumulator is only designed "
@@ -348,15 +366,18 @@ private:
                 // last loaded it, or we run through the saturation check again
             } while (!data.compare_exchange_weak(prev, prev + summand));
         }
+
+        /** \brief Float assignment operator */
         void operator=(const Float in) { data.store(quantize(in)); }
+
         // increasing the number of digits (k_scale) may cause
         // addition-saturation sooner because fewer bits are reserved for the
         // integer quantity (more for the decimal).
         constexpr static float k_scale = 10000.f; // 4 decimal digits
-        std::atomic<uint64_t> data     = 0;
+        std::atomic<uint64_t> data     = 0;       // underlying integral atomic
     };
 
-private: // DirectionTree (and friends) declaration
+private: /* DirectionTree (and friends) declaration */
     class DTreeWrapper {
     public:
         void reset(size_t max_depth, Float rho);
@@ -462,7 +483,7 @@ private: // DirectionTree (and friends) declaration
         DirTree current, prev;
     };
 
-private: // SpatialTree (whose leaves are DirectionTrees) declaration
+private: /* SpatialTree (whose leaves are DirectionTrees) declaration */
     class SpatialTree {
     public:
         SpatialTree() { nodes.resize(1); }
@@ -483,22 +504,17 @@ private: // SpatialTree (whose leaves are DirectionTrees) declaration
     private:
         struct SNode // spatial-tree-node
         {
-            DTreeWrapper dTree;
-            std::array<size_t, 2> children{};
+            class DTreeWrapper dTree;         // direction tree
+            std::array<size_t, 2> children{}; // 2 children ids in binary tree
             uint8_t xyz_axis{}; // (0:x, 1:y, 2:z) which axis to split on
-                                // (cycles through children)
-            inline bool bIsLeaf() const {
-                // equal children => no children
-                return children[0] == children[1];
-            }
+            // equal children => no children => is a leaf node
+            inline bool bIsLeaf() const { return children[0] == children[1]; }
         };
 
         void subdivide(const size_t parent_idx);
+        // representation of the binary tree through an array of indices
         std::vector<SNode> nodes;
-    };
-
-private: // class instances
-    class SpatialTree spatial_tree;
+    } spatial_tree;
 };
 
 MI_EXTERN_CLASS(PathGuide)
