@@ -397,21 +397,12 @@ private: /* DirectionTree (and friends) declaration */
         void add_sample(const Vector3f &dir, const Float lum,
                         const Float weight);
 
-        // destroy all memory used by this class (danger!)
-        // (probably only want this if you KNOW you aren't going to use this
-        // tree's nodes anymore)
-        void free_memory();
-
     private:
         struct DirTree {
             DirTree() {
                 nodes.resize(1);
                 weight = 0.f;
                 sum    = 0.f;
-            }
-
-            void free() {
-                std::vector<DirNode>().swap(nodes); // de-allocate all memory
             }
 
             struct DirNode {
@@ -486,25 +477,29 @@ private: /* DirectionTree (and friends) declaration */
 private: /* SpatialTree (whose leaves are DirectionTrees) declaration */
     class SpatialTree {
     public:
-        SpatialTree() { nodes.resize(1); }
-        ScalarBoundingBox3f bounds;
+        SpatialTree();
         void begin_next_tree_iteration();
         void refine(const Float sample_threshold);
         void reset_leaves(const uint32_t max_depth, const Float rho);
 
-        DTreeWrapper &get_leaf(const Point3f &pos, Vector3f *size = nullptr) {
-            return const_cast<DTreeWrapper &>(
-                const_cast<const SpatialTree *>(this)->get_leaf(pos, size));
-        }
         const DTreeWrapper &get_leaf(const Point3f &pos,
                                      Vector3f *size = nullptr) const;
+        DTreeWrapper &get_leaf(const Point3f &pos, Vector3f *size = nullptr) {
+            // non-const overload of (const) get_leaf which uses the same logic
+            const auto *constThis  = const_cast<const SpatialTree *>(this);
+            const auto &constDTree = constThis->get_leaf(pos, size);
+            return const_cast<DTreeWrapper &>(constDTree);
+        }
+
+        // public bounding box variable for access by PathGuider class
+        ScalarBoundingBox3f m_bounds;
 
     private:
-        struct SNode // spatial-tree-node
-        {
-            class DTreeWrapper dTree;           // direction tree
-            std::array<uint32_t, 2> children{}; // 2 children ids in binary tree
-            uint8_t xyz_axis{}; // (0:x, 1:y, 2:z) which axis to split on
+        struct SNode {
+            // only *leaf* nodes should have a valid dTree unique ptr
+            std::unique_ptr<DTreeWrapper> dTree; // direction tree (2D domain)
+            std::array<uint32_t, 2> children{};  // 2 children for binary tree
+            uint8_t xyz_axis{};                  // 0:x, 1:y, 2:z for split axis
             // equal children => no children => is a leaf node
             inline bool bIsLeaf() const { return children[0] == children[1]; }
         };

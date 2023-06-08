@@ -242,12 +242,6 @@ bool PathGuide<Float, Spectrum>::DTreeWrapper::DirTree::DirNode::sample(
     return true;
 }
 
-MI_VARIANT void PathGuide<Float, Spectrum>::DTreeWrapper::free_memory() {
-    // free both of the quad trees
-    current.free();
-    prev.free();
-}
-
 MI_VARIANT
 typename PathGuide<Float, Spectrum>::Vector3f
 PathGuide<Float, Spectrum>::DTreeWrapper::sample_dir(Point2f &sample) const {
@@ -298,19 +292,39 @@ PathGuide<Float, Spectrum>::DTreeWrapper::sample_dir(Point2f &sample) const {
 }
 
 //-------------------SpatialTree-------------------//
+
+MI_VARIANT
+PathGuide<Float, Spectrum>::SpatialTree::SpatialTree() {
+    struct SNode root;
+    root.dTree = std::make_unique<DTreeWrapper>();
+    nodes.push_back(std::move(root));
+    /// TODO: find a better resize amnt
+    nodes.resize(100);
+}
+
 MI_VARIANT
 void PathGuide<Float, Spectrum>::SpatialTree::begin_next_tree_iteration() {
-    for (auto &node : nodes)
-        if (node.bIsLeaf())
-            node.dTree.build();
+    /// TODO: parallelize?
+    for (auto &node : nodes) {
+        if (node.dTree) {
+            // valid dTree (unique) pointers should only occur on leaf nodes
+            Assert(node.bIsLeaf());
+            node.dTree->build();
+        }
+    }
 }
 
 MI_VARIANT
 void PathGuide<Float, Spectrum>::SpatialTree::reset_leaves(uint32_t max_depth,
                                                            Float rho) {
-    for (auto &node : nodes)
-        if (node.bIsLeaf())
-            node.dTree.reset(max_depth, rho);
+    /// TODO: parallelize?
+    for (auto &node : nodes) {
+        if (node.dTree) {
+            // valid dTree (unique) pointers should only occur on leaf nodes
+            Assert(node.bIsLeaf());
+            node.dTree->reset(max_depth, rho);
+        }
+    }
 }
 
 MI_VARIANT
@@ -329,7 +343,7 @@ void PathGuide<Float, Spectrum>::SpatialTree::refine(const Float threshold) {
 
         // currently hit a leaf node, might want to subdivide it (refine)
         if (nodes[idx].bIsLeaf() &&
-            dr::all(nodes[idx].dTree.get_weight() > threshold)) {
+            dr::all(nodes[idx].dTree->get_weight() > threshold)) {
             // splits the parent in 2, potentially creating more children
             subdivide(idx); // not thread safe!
         }
@@ -343,58 +357,66 @@ void PathGuide<Float, Spectrum>::SpatialTree::refine(const Float threshold) {
     }
 }
 
+/** \brief split the parent node into children to refine samples */
 MI_VARIANT
 void PathGuide<Float, Spectrum>::SpatialTree::subdivide(const uint32_t idx) {
-    // split the parent node in 2 to refine samples
-    Assert(nodes[idx].bIsLeaf()); // has no children
-    // using nodes[idx] rather than taking a pointer to nodes[idx] because
-    // nodes will resize (thus potentially reallocate) which might invalidate
+    // auto parent = [this, idx]() { return nodes[idx]; };
+    // using this lambda for getting the "parent" by indexing directly into
+    // nodes[idx] rather than taking a pointer to nodes[idx] because the nodes
+    // array will resize (and potentially reallocate) which might invalidate
     // any pointers or references!
-    const Float weight          = nodes[idx].dTree.get_weight();
-    const uint32_t num_children = nodes[idx].children.size();
+    Assert(nodes[idx].bIsLeaf()); // has no children
+    Assert(nodes[idx].dTree);     // should have a valid leaf node
+    DTreeWrapper *parent_tree   = nodes[idx].dTree.release();
+    const Float weight          = parent_tree->get_weight();
+    const uint32_t num_children = 2;
+    Assert(nodes[idx].children.size() == num_children); // binary tree
+    // resize (potentially reallocate) to make room for new children
     nodes.resize(nodes.size() + num_children); // prepare for new children
     for (uint32_t i = 0; i < num_children; i++) {
-        const uint32_t child_idx = nodes.size() - 2 + i;
-        nodes[idx].children[i]   = child_idx; // assign the child to the parent
+        const uint32_t child_idx = nodes.size() - num_children + i;
+        nodes[idx].children[i]   = child_idx; // assign child
         SNode &child             = nodes[child_idx];
-        child.dTree              = nodes[idx].dTree; // copy this node's dirtree
-        child.dTree.set_weight(weight / 2.f);        // approx half the samples
+        child.dTree              = std::make_unique<DTreeWrapper>(*parent_tree);
+        child.dTree->set_weight(weight / 2.f); // approx half the samples
         // "iterate through axes on every pass" (0 for x, 1 for y, 2 for z)
         child.xyz_axis = (nodes[idx].xyz_axis + 1) % 3;
     }
-    nodes[idx].dTree.free_memory(); // reset this dTree to save memory
-    Assert(!nodes[idx].bIsLeaf());  // definitely has children now
+    delete parent_tree;            // save memory, only allocate on leaf nodes
+    Assert(!nodes[idx].dTree);     // should be invalid bc not a leaf
+    Assert(!nodes[idx].bIsLeaf()); // definitely has children now
 }
 
+/** \brief find the leaf node (dir tree) that contains this position */
 MI_VARIANT
 const typename PathGuide<Float, Spectrum>::DTreeWrapper &
 PathGuide<Float, Spectrum>::SpatialTree::get_leaf(const Point3f &pos,
                                                   Vector3f *size) const {
-    // find the leaf node that contains this position
 
     // use a position normalized [0 -> 1]^3 within this dTree's bbox
-    Vector3f x = (pos - bounds.min) / bounds.extents();
+    Vector3f x = (pos - m_bounds.min) / m_bounds.extents();
 
     Assert(nodes.size() > 0); // need at least a root node!
 
-    const float split = 0.5f; // decision boundary between left and right child
-    uint32_t idx      = 0;    // start at root node, descent down tree
+    uint32_t idx = 0; // start at root node, descent down tree
     while (!nodes[idx].bIsLeaf()) {
-        const auto ax = nodes[idx].xyz_axis;
+        const uint8_t ax = nodes[idx].xyz_axis;
         Assert(ax <= 2); // x, y, z
 
-        uint32_t child_idx = 0;     // assume going to child 0
-        if (dr::all(x[ax] > split)) // actually going to child 1
+        uint32_t child_idx = 0;    // assume going to child 0
+        if (dr::all(x[ax] > 0.5f)) // actually going to child 1
         {
             child_idx = 1;
-            x[ax] -= split; // (0.5,1) -> (0,0.5)
+            x[ax] -= 0.5f; // 0.5,1) -> (0,0.5)
         }
-        x[ax] /= split; // re-normalize (0,0.5) -> (0,1)
+        x[ax] /= 0.5f; // re-normalize (0,0.5) -> (0,1)
         if (size != nullptr)
             (*size)[ax] /= 2.f;
         idx = nodes[idx].children[child_idx]; // go to next child
     }
-    return nodes[idx].dTree;
+    Assert(nodes[idx].dTree); // should be valid
+    const DTreeWrapper &dTree = (*nodes[idx].dTree.get());
+    return dTree;
 }
 
 //-------------------PathGuide-------------------//
@@ -449,7 +471,7 @@ PathGuide<Float, Spectrum>::initialize(const uint32_t scene_spp,
             "is too low, this will result in an ineffective path guider "
             "with potentially higher variance than BSDF sampling.");
     }
-    spatial_tree.bounds = bbox;
+    spatial_tree.m_bounds = bbox;
     refine(spatial_tree_thresh);
 }
 
@@ -513,8 +535,8 @@ void PathGuide<Float, Spectrum>::add_radiance(
         offset.z() *= sampler->next_1d() - 0.5f;
         newPos += offset;
         // ensure the new position still lies within the tree bounds
-        newPos = dr::minimum(newPos, spatial_tree.bounds.max);
-        newPos = dr::maximum(newPos, spatial_tree.bounds.min);
+        newPos = dr::minimum(newPos, spatial_tree.m_bounds.max);
+        newPos = dr::maximum(newPos, spatial_tree.m_bounds.min);
         // traverse again down the spatial tree, but include jitter
         DTreeWrapper &jittered_dTree = spatial_tree.get_leaf(newPos);
         jittered_dTree.add_sample(dir, luminance, weight);
