@@ -72,8 +72,12 @@ public: /* public API */
      * spp ~doubles on each pass
      */
     bool done_training() const {
-        return (refinement_iter >= num_training_refinements);
+        bool done = (refinement_iter >= num_training_refinements);
+        if (done)
+            sNeedAtomics = false;
+        return done;
     }
+    inline static bool sNeedAtomics = true;
 
     /**
      * \brief Returns the number of spp for training on a particular pass
@@ -306,6 +310,7 @@ private: /* Quantized Atomic Float Accumulator */
         QuantizedAtomicFloatAccumulator &
         operator=(const QuantizedAtomicFloatAccumulator &other) {
             data.store(other.data.load());
+            __data = other.__data;
             return *this;
         }
 
@@ -327,7 +332,13 @@ private: /* Quantized Atomic Float Accumulator */
 
         /** \brief "de-quantize" back to Float with N decimal places */
         operator Float() const {
-            return Float(data.load(std::memory_order_relaxed) / k_scale);
+            uint64_t unquantized; // needs to scale to preserve decimal location
+            if (PathGuide::sNeedAtomics) {
+                unquantized = data.load(std::memory_order_relaxed); // atomic
+            } else {
+                unquantized = __data; // fast
+            }
+            return Float(unquantized / k_scale);
         }
 
         /** \brief helper method converting Float (template) to normal float */
@@ -365,16 +376,21 @@ private: /* Quantized Atomic Float Accumulator */
                 // ensures the value of data hasn't changed from prev since we
                 // last loaded it, or we run through the saturation check again
             } while (!data.compare_exchange_weak(prev, prev + summand));
+            __data = prev + summand;
         }
 
         /** \brief Float assignment operator */
-        void operator=(const Float in) { data.store(quantize(in)); }
+        void operator=(const Float in) {
+            data.store(quantize(in));
+            __data = quantize(in);
+        }
 
         // increasing the number of digits (k_scale) may cause
         // addition-saturation sooner because fewer bits are reserved for the
         // integer quantity (more for the decimal).
         constexpr static float k_scale = 10000.f; // 4 decimal digits
         std::atomic<uint64_t> data     = 0;       // underlying integral atomic
+        uint64_t __data                = 0;       // non-atomic variant of data
     };
 
 private: /* DirectionTree (and friends) declaration */
