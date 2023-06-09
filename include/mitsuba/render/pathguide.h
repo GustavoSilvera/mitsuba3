@@ -160,29 +160,6 @@ public: /* public API */
      */
     Float sample_pdf(const Point3f &pos, const Vector3f &dir) const;
 
-private: /* Utility Methods */
-    /**
-     * \brief Converting a 2D direction to a quadrant (0, 1, 2, 3)
-     *
-     * Quadrants are indexed like this
-     *  0.......1
-     *  ---------  0
-     *  | 0 | 1 |  .
-     *  ---------  .
-     *  | 2 | 3 |  .
-     *  ---------  1
-     */
-    static uint32_t Angles2Quadrant(const Point2f &pos);
-
-    /**
-     * \brief Re-normalize a point within a quad back to (0,1)^2
-     *
-     * Takes a 2D point that lies within a quad (separated between {0, 0.5, 1}
-     * for x and y) and renormalizes the point to be within (0, 1) for x and y
-     * so this point can be used further down the tree.
-     */
-    static Point2f NormalizeForQuad(const Point2f &pos, const uint32_t quad);
-
 private: /* constructor parameters */
     /**
      * \brief percentage of samples in render that are used for training
@@ -394,6 +371,7 @@ private: /* DirectionTree (and friends) declaration */
         /** \brief Adding data to the directional tree */
         void add_sample(const Vector3f &dir, const Float lum,
                         const Float weight);
+        static uint8_t get_child_idx(Point2f &p);
 
     private:
         struct DirTree {
@@ -407,8 +385,10 @@ private: /* DirectionTree (and friends) declaration */
                 bool bIsLeaf(uint32_t idx) const { return children[idx] == 0; }
             };
 
+            void add_lum_helper(const uint32_t node_idx, Point2f &pos,
+                                const Float lum);
+            Float get_pdf_helper(const uint32_t node_idx, Point2f &pos) const;
             QuantizedAtomicFloatAccumulator weight, sum;
-            uint32_t max_depth = 0;
             std::vector<DirNode> nodes;
         };
 

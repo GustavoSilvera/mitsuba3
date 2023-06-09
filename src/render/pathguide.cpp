@@ -5,63 +5,13 @@
 
 NAMESPACE_BEGIN(mitsuba)
 
-MI_VARIANT
-uint32_t PathGuide<Float, Spectrum>::Angles2Quadrant(const Point2f &pos) {
-    // takes the 2D location input and returns the corresponding quadrant
-    auto cpos = dr::clamp(pos, 0.f, 1.f); // within bounds
-
-    if (dr::all(cpos.x() < 0.5f && cpos.y() < 0.5f)) // top left
-        return 0;                                    // (quadrant 0)
-    else if (dr::all(cpos.y() < 0.5f))               // must be top right
-        return 1;                                    // (quadrant 1)
-    else if (dr::all(cpos.x() < 0.5f))               // must be bottom left
-        return 2;                                    // (quadrant 2)
-    return 3;                                        // (quadrant 3)
-}
-
-MI_VARIANT
-typename PathGuide<Float, Spectrum>::Point2f
-PathGuide<Float, Spectrum>::NormalizeForQuad(const Point2f &pos,
-                                             const uint32_t quad) {
-    // re-normalize the 2D direction back to (0, 1) from its quad
-    /**
-     * Quadrants are indexed like this
-     *  0.......1
-     *  ---------  0
-     *  | 0 | 1 |  .
-     *  ---------  .
-     *  | 2 | 3 |  .
-     *  ---------  1
-     */
-    Point2f ret = dr::clamp(pos, 0.f, 1.f);
-    Assert(quad <= 3);
-    if (quad == 0) // top left (quadrant 0)
-    {
-        // do nothing! (already within [0,0.5] for both x and y)
-    } else if (quad == 1)            // top right (quadrant 1)
-        ret -= Point2f{ 0.5f, 0.f }; // map (x) [0.5, 1] -> [0, 0.5]
-    else if (quad == 2)              // bottom left (quadrant 2)
-        ret -= Point2f{ 0.f, 0.5f }; // map (y) [0.5, 1] -> [0, 0.5]
-    else
-        ret -= Point2f{ 0.5f, 0.5f }; // map (x & y) [0.5, 1] -> [0, 0.5]
-    // ret should be within [0, 0.5]
-    Assert(dr::all(ret.x() >= 0.0f - dr::Epsilon<Float> &&
-                   ret.x() <= 0.5f + dr::Epsilon<Float> &&
-                   ret.y() >= 0.0f - dr::Epsilon<Float> &&
-                   ret.y() <= 0.5f + dr::Epsilon<Float>));
-    ret = 2.f * ret; // map [0, 0.5] -> [0, 1] (re-normalize)
-    // avoid degeneracies by clamping to (0, 1)
-    return dr::clamp(ret, dr::Epsilon<Float>, dr::OneMinusEpsilon<Float>);
-}
-
 //-------------------DTreeWrapper-------------------//
 
 MI_VARIANT
 void PathGuide<Float, Spectrum>::DTreeWrapper::add_sample(const Vector3f &dir,
                                                           const Float lum,
                                                           const Float weight) {
-    auto &tree  = current; // only adding samples to the current (building) tree
-    Point2f pos = warp::uniform_sphere_to_square(dir);
+    auto &tree = current; // only adding samples to the current (building) tree
     tree.weight += weight;
     if (dr::all(lum == 0.f))
         return; // no need to add 0 luminance to all the tree nodes
@@ -71,17 +21,58 @@ void PathGuide<Float, Spectrum>::DTreeWrapper::add_sample(const Vector3f &dir,
     Assert(tree.nodes.size() >= 1);
 
     // update internal nodes
-    auto *node = &(tree.nodes[0]); // root
-    while (true) {
-        Assert(node != nullptr);
-        const uint32_t quad_idx = Angles2Quadrant(pos);
-        pos                     = NormalizeForQuad(pos, quad_idx);
-        node->data[quad_idx] += lum; // see QuantizedAtomicFloatAccumulator
-        if (node->bIsLeaf(quad_idx))
-            break;
-        uint32_t child_idx = node->children[quad_idx];
-        node               = &(tree.nodes[child_idx]);
+    Point2f pos = warp::uniform_sphere_to_square(dir);
+    tree.add_lum_helper(0, pos, lum); // start at root and recurse
+}
+
+MI_VARIANT
+Float PathGuide<Float, Spectrum>::DTreeWrapper::sample_pdf(
+    const Vector3f &dir) const {
+    const auto &tree = prev;
+
+    // pdf starts out as 1/4pi (uniform across sphere)
+    Float pdf = warp::square_to_uniform_sphere_pdf(dir);
+    if (tree.nodes.size() == 0 ||
+        dr::all(Float(tree.weight) == 0.f || Float(tree.sum) == 0.f))
+        return pdf;
+
+    // begin recursing into nodes
+    Point2f pos = warp::uniform_sphere_to_square(dir);
+    pdf *= tree.get_pdf_helper(0, pos);
+    return pdf;
+}
+
+MI_VARIANT
+uint8_t PathGuide<Float, Spectrum>::DTreeWrapper::get_child_idx(Point2f &p) {
+    /**
+     * \brief Return the corresponding quad index for p in and re-normalize it
+     *
+     * Takes a 2D point that lies within a quad (separated between {0, 0.5, 1}
+     * for x and y) and returns the quad. Also renormalizes the Point2f and
+     * to fit within (0, 1)^2 so it can be used again further down the
+     * (direction) tree. The quad index (between 0, 1, 2, 3) is used for
+     * indexing into the children array for the nodes of the direction tree.
+     *
+     * Quadrants are indexed like this:
+     *  0.......1
+     *  ---------  0
+     *  | 0 | 1 |  .
+     *  ---------  .
+     *  | 2 | 3 |  .
+     *  ---------  1
+     */
+    uint8_t quad = 0;
+    // Point2f has 2 dimensions (by design)
+    for (uint8_t i = 0; i < 2; i++) {
+        if (dr::all(p[i] < 0.5f)) {
+            p[i] *= 2.f; // (0, 0.5) -> (0, 1)
+            // quad |= 0 << i; // no-op
+        } else {
+            p[i] = (p[i] - 0.5f) * 2.f; // (0.5, 1) -> (0, 1)
+            quad |= 1 << i;
+        }
     }
+    return quad;
 }
 
 MI_VARIANT
@@ -90,9 +81,8 @@ void PathGuide<Float, Spectrum>::DTreeWrapper::reset(const uint32_t max_depth,
     // clear and re-initialize the nodes
     current.nodes.clear();
     current.nodes.resize(1); // ensure a root node is present
-    current.max_depth = 0;
-    current.weight    = 0;
-    current.sum       = 0.f;
+    current.weight = 0;
+    current.sum    = 0.f;
     struct StackItem {
         uint32_t node_idx;           // index of node in current tree
         uint32_t source_idx;         // index of node in source tree
@@ -108,7 +98,6 @@ void PathGuide<Float, Spectrum>::DTreeWrapper::reset(const uint32_t max_depth,
         const StackItem s = stack.top();
         stack.pop();
 
-        current.max_depth = std::max(current.max_depth, s.depth);
         Assert(s.tree != nullptr);
         Assert(s.source_idx < s.tree->nodes.size());
         // always index into the the nodes array rather than taking a
@@ -164,47 +153,96 @@ MI_VARIANT void PathGuide<Float, Spectrum>::DTreeWrapper::build() {
 }
 
 MI_VARIANT
-Float PathGuide<Float, Spectrum>::DTreeWrapper::sample_pdf(
-    const Vector3f &dir) const {
+typename PathGuide<Float, Spectrum>::Vector3f
+PathGuide<Float, Spectrum>::DTreeWrapper::sample_dir(Point2f &sample) const {
     const auto &tree = prev;
 
-    // pdf starts out as 1/4pi (uniform across sphere)
-    Float pdf = warp::square_to_uniform_sphere_pdf(dir);
+    // early out to indicate that this tree is invalid
     if (tree.nodes.size() == 0 ||
-        dr::all(Float(tree.weight) == 0.f || Float(tree.sum) == 0.f))
-        return pdf;
+        dr::all(Float(tree.weight) == 0 || Float(tree.sum) == 0.f))
+        return warp::square_to_uniform_sphere(sample);
 
-    // begin recursing into nodes
-    Point2f pos      = warp::uniform_sphere_to_square(dir);
-    const auto *node = &(tree.nodes[0]); // start at root
-    while (true) {
-        Assert(node != nullptr);
+    // recurse into the tree
+    Point2f pos{ 0.f, 0.f }; // center of cartesian plane (no leaning)
+    float scale = 1.0f;      // halved on each (non-leaf) iteration
 
-        const uint32_t quad_idx = Angles2Quadrant(pos);
-        pos                     = NormalizeForQuad(pos, quad_idx);
+    uint32_t which_quadrant = 0;
+    uint32_t index          = 0;
+    do {
+        const auto &node = tree.nodes[index];
 
-        const Float quad_samples = Float(node->data[quad_idx]);
-        if (dr::all(quad_samples <= 0.f))
-            return 0.f; // invalid pdf
+        if (!node.sample(which_quadrant, sample.x()))
+            return warp::square_to_uniform_sphere(sample); // invalid!
+        Assert(which_quadrant <= 3);
 
-        // compute the data sum of the 4 quads
-        Float sum = 0.f;
-        for (const auto &q : node->data)
-            sum += Float(q);
+        // use a "quadrant origin" to push sample in corresponding quadrant
+        const Point2f quadrant_origin{
+            0.5f * (which_quadrant % 2 == 1), // right side of y=0
+            0.5f * (which_quadrant >= 2),     // underneath x=0
+        };
 
-        // distribute this mean evenly for all "quads"
-        // equivlaent to scaling by 4x since each quadrant has 1/4 unit area
-        pdf *= (4.f * quad_samples) / sum;
+        if (node.bIsLeaf(which_quadrant)) // hit a leaf
+        {
+            // add the initial random sample to this quadrant
+            pos += scale * (quadrant_origin + 0.5f * sample);
+        } else {
+            // continue burrowing into this quadrant
+            pos += scale * quadrant_origin;
+            scale /= 2.f;
+        }
 
-        if (node->bIsLeaf(quad_idx))
-            break;
+        // iterate down the tree
+        index = node.children[which_quadrant];
+    } while (index != 0); // index = 0 => leaf node (or root)
 
-        // traverse down the tree (until leaf is found)
-        uint32_t child_idx = node->children[quad_idx];
-        node               = &(tree.nodes[child_idx]);
-    }
-    return pdf;
+    return warp::square_to_uniform_sphere(pos);
 }
+
+//---------------------DirTree---------------------//
+
+MI_VARIANT
+void PathGuide<Float, Spectrum>::DTreeWrapper::DirTree::add_lum_helper(
+    const uint32_t node_idx, Point2f &pos, const Float lum) {
+    auto &node = nodes[node_idx];
+
+    uint8_t quad_idx = get_child_idx(pos);
+
+    // add luminance to every node down this path
+    node.data[quad_idx] += lum; // see QuantizedAtomicFloatAccumulator
+
+    // continue traversing down the tree until leaf node
+    if (!node.bIsLeaf(quad_idx))
+        add_lum_helper(node.children[quad_idx], pos, lum);
+}
+
+MI_VARIANT
+Float PathGuide<Float, Spectrum>::DTreeWrapper::DirTree::get_pdf_helper(
+    const uint32_t node_idx, Point2f &pos) const {
+    const auto &node = nodes[node_idx];
+
+    uint8_t quad_idx = get_child_idx(pos);
+
+    const Float quad_i = Float(node.data[quad_idx]);
+    if (dr::all(quad_i <= 0.f))
+        return 0.f; // invalid pdf
+
+    // compute the total sum of the 4 quads
+    Float total = 0.f;
+    for (const auto &q : node.data)
+        total += Float(q);
+
+    // distribute evenly for Angular domain split into 4 quadrants
+    // (unit square) each with 1/4 unit area.
+    Float p = ((4.f * quad_i) / total); // contribution of this node
+
+    if (node.bIsLeaf(quad_idx))
+        return p;
+
+    // recurse down the tree
+    return p * get_pdf_helper(node.children[quad_idx], pos);
+}
+
+//---------------------DirNode---------------------//
 
 MI_VARIANT
 bool PathGuide<Float, Spectrum>::DTreeWrapper::DirTree::DirNode::sample(
@@ -245,55 +283,6 @@ bool PathGuide<Float, Spectrum>::DTreeWrapper::DirTree::DirNode::sample(
     r1 = dr::clamp(r1, dr::Epsilon<Float>, dr::OneMinusEpsilon<Float>);
     Assert(quad <= 3); // 0, 1, 2, or 3
     return true;
-}
-
-MI_VARIANT
-typename PathGuide<Float, Spectrum>::Vector3f
-PathGuide<Float, Spectrum>::DTreeWrapper::sample_dir(Point2f &sample) const {
-    const auto &tree = prev;
-
-    // early out to indicate that this tree is invalid
-    if (tree.nodes.size() == 0 ||
-        dr::all(Float(tree.weight) == 0 || Float(tree.sum) == 0.f))
-        return warp::square_to_uniform_sphere(sample);
-
-    // recurse into the tree
-    Point2f pos{ 0.f, 0.f }; // center of cartesian plane (no leaning)
-    float scale = 1.0f;      // halved on each (non-leaf) iteration
-
-    uint32_t which_quadrant = 0;
-    const auto *node        = &(tree.nodes[0]); // start at root
-    while (true) {
-        Assert(node != nullptr);
-
-        if (!node->sample(which_quadrant, sample.x()))
-            return warp::square_to_uniform_sphere(sample); // invalid!
-        Assert(which_quadrant <= 3);
-
-        // use a "quadrant origin" to push sample in corresponding quadrant
-        const Point2f quadrant_origin{
-            0.5f * (which_quadrant % 2 == 1), // right side of y=0
-            0.5f * (which_quadrant >= 2),     // underneath x=0
-        };
-
-        if (node->bIsLeaf(which_quadrant)) // hit a leaf
-        {
-            // add the initial random sample to this quadrant
-            pos += scale * (quadrant_origin + 0.5f * sample);
-            break;
-        } else {
-            // continue burrowing into this quadrant
-            pos += scale * quadrant_origin;
-            scale /= 2.f;
-        }
-
-        uint32_t child_idx = node->children[which_quadrant];
-
-        // iterate down the tree
-        node = &(tree.nodes[child_idx]);
-    }
-
-    return warp::square_to_uniform_sphere(pos);
 }
 
 //-------------------SpatialTree-------------------//
