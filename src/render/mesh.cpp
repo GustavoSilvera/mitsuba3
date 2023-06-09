@@ -62,13 +62,11 @@ void Mesh<Float, Spectrum>::initialize() {
     Base::initialize();
 }
 
-MI_VARIANT Mesh<Float, Spectrum>::~Mesh() { }
+MI_VARIANT Mesh<Float, Spectrum>::~Mesh() {}
 
 MI_VARIANT void Mesh<Float, Spectrum>::traverse(TraversalCallback *callback) {
     Base::traverse(callback);
 
-    callback->put_parameter("vertex_count",     m_vertex_count,     +ParamFlags::NonDifferentiable);
-    callback->put_parameter("face_count",       m_face_count,       +ParamFlags::NonDifferentiable);
     callback->put_parameter("faces",            m_faces,            +ParamFlags::NonDifferentiable);
     callback->put_parameter("vertex_positions", m_vertex_positions, ParamFlags::Differentiable | ParamFlags::Discontinuous);
     callback->put_parameter("vertex_normals",   m_vertex_normals,   ParamFlags::Differentiable | ParamFlags::Discontinuous);
@@ -77,10 +75,44 @@ MI_VARIANT void Mesh<Float, Spectrum>::traverse(TraversalCallback *callback) {
     // We arbitrarily chose to show all attributes as being differentiable here.
     for (auto &[name, attribute]: m_mesh_attributes)
         callback->put_parameter(name, attribute.buf, +ParamFlags::Differentiable);
+
+
 }
 
 MI_VARIANT void Mesh<Float, Spectrum>::parameters_changed(const std::vector<std::string> &keys) {
-    if (keys.empty() || string::contains(keys, "vertex_positions")) {
+    bool mesh_attributes_changed = false;
+
+    if (m_vertex_positions.size() != m_vertex_count * 3) {
+        Log(Debug, "parameters_changed(): Vertex count changed, updating it.");
+        mesh_attributes_changed = true;
+        m_vertex_count = m_vertex_positions.size() / 3;
+    }
+    if (m_faces.size() != m_face_count * 3) {
+        Log(Debug, "parameters_changed(): Face count changed, updating it.");
+        mesh_attributes_changed = true;
+        m_face_count = m_faces.size() / 3;
+    }
+    if (has_vertex_normals() && m_vertex_normals.size() != m_vertex_count * 3) {
+        Log(Debug, "parameters_changed(): Vertex normal count changed, updating it.");
+        mesh_attributes_changed = true;
+        m_vertex_normals = dr::zeros<FloatStorage>(m_vertex_count * 3);
+    }
+    if (has_vertex_texcoords() && m_vertex_texcoords.size() != m_vertex_count * 2) {
+        Log(Debug, "parameters_changed(): Vertex count has changed, but no UVs were specified, resetting them.");
+        mesh_attributes_changed = true;
+        m_vertex_texcoords = dr::zeros<FloatStorage>(m_vertex_count * 2);
+    }
+    for (auto &[name, attribute]: m_mesh_attributes) {
+        size_t expected_size = attribute.size * (attribute.type == MeshAttributeType::Vertex ? m_vertex_count : m_face_count);
+
+        if (attribute.buf.size() != expected_size ) {
+            Log(Debug, "parameters_changed(): Vertex or face count changed, but attribute \"%s\" was not updated, resetting it.", name);
+            mesh_attributes_changed = true;
+            attribute.buf = dr::zeros<FloatStorage>(expected_size);
+        }
+    }
+
+    if (keys.empty() || string::contains(keys, "vertex_positions") || mesh_attributes_changed) {
         recompute_bbox();
 
         if (has_vertex_normals())
@@ -338,6 +370,11 @@ MI_VARIANT void Mesh<Float, Spectrum>::recompute_vertex_normals() {
         // --------------------- Kernel 2 starts here ---------------------
 
         normals = dr::normalize(normals);
+
+        // Disconnect the vertex normal buffer from any pre-existing AD
+        // graph. Otherwise an AD graph might be unnecessarily retained
+        // here, despite the following lines re-initializing the normals.
+        dr::disable_grad(m_vertex_normals);
 
         UInt32 ni = dr::arange<UInt32>(m_vertex_count) * 3;
         for (size_t i = 0; i < 3; ++i)
@@ -730,7 +767,6 @@ Mesh<Float, Spectrum>::compute_surface_interaction(const Ray3f &ray,
         Point2f uv0 = vertex_texcoord(fi[0], active),
                 uv1 = vertex_texcoord(fi[1], active),
                 uv2 = vertex_texcoord(fi[2], active);
-
         if (IsDiff && has_flag(ray_flags, RayFlags::DetachShape)) {
             uv0 = dr::detach<true>(uv0);
             uv1 = dr::detach<true>(uv1);
@@ -896,17 +932,21 @@ MI_VARIANT void Mesh<Float, Spectrum>::add_attribute(const std::string& name,
     m_mesh_attributes.insert({ name, { dim, type, buffer } });
 }
 
+MI_VARIANT typename Mesh<Float, Spectrum>::Mask
+Mesh<Float, Spectrum>::has_attribute(const std::string& name, Mask active) const {
+    const auto& it = m_mesh_attributes.find(name);
+    if (it == m_mesh_attributes.end())
+        return Base::has_attribute(name, active);
+    return true;
+}
+
 MI_VARIANT typename Mesh<Float, Spectrum>::UnpolarizedSpectrum
 Mesh<Float, Spectrum>::eval_attribute(const std::string& name,
                                       const SurfaceInteraction3f &si,
                                       Mask active) const {
     const auto& it = m_mesh_attributes.find(name);
-    if (it == m_mesh_attributes.end()) {
-        if constexpr (dr::is_jit_v<Float>)
-            return 0.f;
-        else
-            Throw("Invalid attribute requested %s.", name.c_str());
-    }
+    if (it == m_mesh_attributes.end())
+        return Base::eval_attribute(name, si, active);
 
     const auto& attr = it->second;
     if (attr.size == 1)
@@ -930,12 +970,8 @@ Mesh<Float, Spectrum>::eval_attribute_1(const std::string& name,
                                         const SurfaceInteraction3f &si,
                                         Mask active) const {
     const auto& it = m_mesh_attributes.find(name);
-    if (it == m_mesh_attributes.end()) {
-        if constexpr (dr::is_jit_v<Float>)
-            return 0.f;
-        else
-            Throw("Invalid attribute requested %s.", name.c_str());
-    }
+    if (it == m_mesh_attributes.end())
+        return Base::eval_attribute_1(name, si, active);
 
     const auto& attr = it->second;
     if (attr.size == 1) {
@@ -953,12 +989,8 @@ Mesh<Float, Spectrum>::eval_attribute_3(const std::string& name,
                                         const SurfaceInteraction3f &si,
                                         Mask active) const {
     const auto& it = m_mesh_attributes.find(name);
-    if (it == m_mesh_attributes.end()) {
-        if constexpr (dr::is_jit_v<Float>)
-            return 0.f;
-        else
-            Throw("Invalid attribute requested %s.", name.c_str());
-    }
+    if (it == m_mesh_attributes.end())
+        return Base::eval_attribute_3(name, si, active);
 
     const auto& attr = it->second;
     if (attr.size == 3) {
