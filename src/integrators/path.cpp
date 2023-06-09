@@ -363,7 +363,7 @@ public:
             // compute the bsdf eval by multiplying the weight by pdf
             f_s = bsdf_weight * bsdf_sample.pdf;
             // now with the bsdf value, we can use the pdf mixture
-            pg_pdf = pg->sample_pdf(si.p, si.to_world(wo_mixture));
+            pg_pdf = pg->get_pdf(si.p, si.to_world(wo_mixture));
         }
 
         // mix together the bsdf probability and the pg probability

@@ -60,7 +60,7 @@ public: /* public API */
          * BSDF sampling and for all k > 1, Lk is esetimated by combining
          * samples of LK-1 and the BSDF via multiple importance sampling"[1]
          */
-        return (refinement_iter >= 1);
+        return (refinement_count >= 1);
     }
 
     /**
@@ -72,7 +72,7 @@ public: /* public API */
      * spp ~doubles on each pass
      */
     bool done_training() const {
-        return (refinement_iter >= num_training_refinements);
+        return (refinement_count >= num_training_refinements);
     }
 
     /**
@@ -158,7 +158,7 @@ public: /* public API */
      * \brief Returns the pdf of sampling the direction (dir) from the position
      * (pos) with the current path guiding system
      */
-    Float sample_pdf(const Point3f &pos, const Vector3f &dir) const;
+    Float get_pdf(const Point3f &pos, const Vector3f &dir) const;
 
 private: /* constructor parameters */
     /**
@@ -211,7 +211,7 @@ private: /* hyperparameters (from the paper recommendations)*/
 
 private: /* Internal implementation */
     /** \brief member variables used for internal representation */
-    uint32_t refinement_iter = 0; // number of refinements (training passes)
+    uint32_t refinement_count = 0; // number of refinements (training passes)
     uint32_t num_training_refinements; // number of refinements for training
     uint32_t spp_overflow = 0; // any remaining spp from geometric series
 
@@ -355,28 +355,60 @@ private: /* Quantized Atomic Float Accumulator */
     };
 
 private: /* DirectionTree (and friends) declaration */
+    /** \brief Wrapper over the 2 direction trees that are used
+     *
+     * The paper [1] describes keeping track of 2 SD-trees, a "current" and
+     * "previous", for refining the future SD-trees with learned information.
+     * This data structure contains this mechanism internally.
+     */
     class DTreeWrapper {
     public:
-        void reset(uint32_t max_depth, Float rho);
-        void build();
+        /** \brief Sampling the pdf of a particular direction in this tree */
+        Float get_pdf(const Vector3f &dir) const;
+
+        /** \brief Sampling a direction in this angular domain */
+        Vector3f sample_dir(Point2f &sample) const;
 
         /** \brief Getter for the main weight of the current tree */
         Float get_weight() const { return Float(current.weight); }
+
         /** \brief Setter for the main weight of the current tree */
         void set_weight(const Float weight) { current.weight = weight; }
-        /** \brief Sampling the pdf of a particular direction in this tree */
-        Float sample_pdf(const Vector3f &dir) const;
-        /** \brief Sampling a direction in this angular domain */
-        Vector3f sample_dir(Point2f &sample) const;
-        /** \brief Adding data to the directional tree */
-        void add_sample(const Vector3f &dir, const Float lum,
-                        const Float weight);
+
+        /** \brief Reset the current tree and refine its topology from prev */
+        void refine(uint32_t max_depth, Float rho);
+
+        /** \brief Prepare for the next tree refinement */
+        void prepare_for_refinement();
+
+        /** \brief Adding data (luminance) to the directional tree */
+        void add_lum(const Vector3f &dir, const Float lum, const Float weight);
+
+        /**
+         * \brief Return the corresponding quad index for p and renormalize p
+         *
+         * Takes a 2D point that lies within a quad (separated between 0:0.5:1
+         * for x and y) and returns the quad. Also renormalizes the Point2f and
+         * to fit within (0, 1)^2 so it can be used again further down the
+         * (direction) tree. The quad index (between 0, 1, 2, 3) is used for
+         * indexing into the children array for the nodes of the direction tree.
+         *
+         * Quadrants are indexed like this:
+         *  0.......1
+         *  ---------  0
+         *  | 0 | 1 |  .
+         *  ---------  .
+         *  | 2 | 3 |  .
+         *  ---------  1
+         */
         static uint8_t get_child_idx(Point2f &p);
 
     private:
+        /** \brief An individual quad-tree to partition the angular domain */
         struct DirectionTree {
             DirectionTree() { nodes.resize(1); } // ensure root node exists
 
+            /** \brief Nodes contain 4 children and 4 samples. One per quad */
             struct DTreeNode {
                 DTreeNode() = default;
                 std::array<QuantizedAtomicFloatAccumulator, 4> data;
@@ -385,9 +417,12 @@ private: /* DirectionTree (and friends) declaration */
                 bool bIsLeaf(uint32_t idx) const { return children[idx] == 0; }
             };
 
-            void add_lum_helper(const uint32_t node_idx, Point2f &pos,
-                                const Float lum);
-            Float get_pdf_helper(const uint32_t node_idx, Point2f &pos) const;
+            /** \brief Recursive helper method to add_lum for node traversal */
+            void add_lum_helper(const uint32_t, Point2f &, const Float);
+
+            /** \brief Recursive helper method to get_pdf for node traversal */
+            Float get_pdf_helper(const uint32_t, Point2f &) const;
+
             QuantizedAtomicFloatAccumulator weight, sum;
             std::vector<DTreeNode> nodes;
         };
@@ -416,7 +451,7 @@ private: /* SpatialTree (whose leaves are DirectionTrees) declaration */
         SpatialTree();
 
         /** \brief Prepares the direction tree leaves for refinement */
-        void prepare_for_refinement();
+        void prepare_leaves_for_refinement();
 
         /**
          * \brief traverse and find leaf nodes that quality for refinement
@@ -429,12 +464,12 @@ private: /* SpatialTree (whose leaves are DirectionTrees) declaration */
         void refine(const Float refine_threshold);
 
         /**
-         * \brief Reset all the leaves in the tree
+         * \brief Refine all the leaves in the tree
          *
-         * "Resetting" the nodes involves calling reset on their corresponding
-         * dTree. This method is not thread safe.
+         * Refining the leaves involves rebuilding the topology of each of the
+         * directional-trees on the leaf-nodes. This method is not thread-safe.
          */
-        void reset_leaves(const uint32_t max_depth, const Float rho);
+        void refine_leaves(const uint32_t max_depth, const Float rho);
 
         /** \brief find the leaf node (dir tree) that contains this position */
         const DTreeWrapper &get_leaf(const Point3f &pos,

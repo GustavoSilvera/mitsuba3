@@ -8,10 +8,11 @@ NAMESPACE_BEGIN(mitsuba)
 //-------------------DTreeWrapper-------------------//
 
 MI_VARIANT
-void PathGuide<Float, Spectrum>::DTreeWrapper::add_sample(const Vector3f &dir,
-                                                          const Float lum,
-                                                          const Float weight) {
+void PathGuide<Float, Spectrum>::DTreeWrapper::add_lum(const Vector3f &dir,
+                                                       const Float lum,
+                                                       const Float weight) {
     auto &tree = current; // only adding samples to the current (building) tree
+
     tree.weight += weight;
     if (dr::all(lum == 0.f))
         return; // no need to add 0 luminance to all the tree nodes
@@ -26,9 +27,9 @@ void PathGuide<Float, Spectrum>::DTreeWrapper::add_sample(const Vector3f &dir,
 }
 
 MI_VARIANT
-Float PathGuide<Float, Spectrum>::DTreeWrapper::sample_pdf(
+Float PathGuide<Float, Spectrum>::DTreeWrapper::get_pdf(
     const Vector3f &dir) const {
-    const auto &tree = prev;
+    const auto &tree = prev; // sample with previous (current may not be ready)
 
     // pdf starts out as 1/4pi (uniform across sphere)
     Float pdf = warp::square_to_uniform_sphere_pdf(dir);
@@ -45,9 +46,9 @@ Float PathGuide<Float, Spectrum>::DTreeWrapper::sample_pdf(
 MI_VARIANT
 uint8_t PathGuide<Float, Spectrum>::DTreeWrapper::get_child_idx(Point2f &p) {
     /**
-     * \brief Return the corresponding quad index for p in and re-normalize it
+     * \brief Return the corresponding quad index for p and re-normalize p
      *
-     * Takes a 2D point that lies within a quad (separated between {0, 0.5, 1}
+     * Takes a 2D point that lies within a quad (separated between 0:0.5:1
      * for x and y) and returns the quad. Also renormalizes the Point2f and
      * to fit within (0, 1)^2 so it can be used again further down the
      * (direction) tree. The quad index (between 0, 1, 2, 3) is used for
@@ -66,7 +67,6 @@ uint8_t PathGuide<Float, Spectrum>::DTreeWrapper::get_child_idx(Point2f &p) {
     for (uint8_t i = 0; i < 2; i++) {
         if (dr::all(p[i] < 0.5f)) {
             p[i] *= 2.f; // (0, 0.5) -> (0, 1)
-            // quad |= 0 << i; // no-op
         } else {
             p[i] = (p[i] - 0.5f) * 2.f; // (0.5, 1) -> (0, 1)
             quad |= 1 << i;
@@ -76,12 +76,16 @@ uint8_t PathGuide<Float, Spectrum>::DTreeWrapper::get_child_idx(Point2f &p) {
 }
 
 MI_VARIANT
-void PathGuide<Float, Spectrum>::DTreeWrapper::reset(const uint32_t max_depth,
-                                                     const Float rho) {
-    // clear and re-initialize the nodes
+void PathGuide<Float, Spectrum>::DTreeWrapper::refine(const uint32_t max_depth,
+                                                      const Float rho) {
+
+    // This method resets the current tree and computes its topology as a
+    // refined version of the previous tree. This subdivision continues
+    // recursively if the previous tree has enough samples/energy.
+
     current.nodes.clear();
     current.nodes.resize(1); // ensure a root node is present
-    current.weight = 0;
+    current.weight = 0.f;
     current.sum    = 0.f;
     struct StackItem {
         uint32_t node_idx;                 // index of node in current tree
@@ -100,7 +104,7 @@ void PathGuide<Float, Spectrum>::DTreeWrapper::reset(const uint32_t max_depth,
 
         Assert(s.tree != nullptr);
         Assert(s.source_idx < s.tree->nodes.size());
-        // always index into the the nodes array rather than taking a
+        // always index into the the nodes array rather than taking a raw
         // pointer/ref because it may get reallocated when creating new children
         auto source_node = [s]() { return s.tree->nodes[s.source_idx]; };
         for (uint32_t quad = 0; quad < 4; quad++) {
@@ -144,7 +148,8 @@ void PathGuide<Float, Spectrum>::DTreeWrapper::reset(const uint32_t max_depth,
     }
 }
 
-MI_VARIANT void PathGuide<Float, Spectrum>::DTreeWrapper::build() {
+MI_VARIANT void
+PathGuide<Float, Spectrum>::DTreeWrapper::prepare_for_refinement() {
     // must always have a root node!
     Assert(current.nodes.size() > 0);
     Assert(prev.nodes.size() > 0);
@@ -155,7 +160,7 @@ MI_VARIANT void PathGuide<Float, Spectrum>::DTreeWrapper::build() {
 MI_VARIANT
 typename PathGuide<Float, Spectrum>::Vector3f
 PathGuide<Float, Spectrum>::DTreeWrapper::sample_dir(Point2f &sample) const {
-    const auto &tree = prev;
+    const auto &tree = prev; // sample with previous (current may not be ready)
 
     // early out to indicate that this tree is invalid
     if (tree.nodes.size() == 0 ||
@@ -299,13 +304,13 @@ PathGuide<Float, Spectrum>::SpatialTree::SpatialTree() {
 }
 
 MI_VARIANT
-void PathGuide<Float, Spectrum>::SpatialTree::prepare_for_refinement() {
+void PathGuide<Float, Spectrum>::SpatialTree::prepare_leaves_for_refinement() {
     /// TODO: parallelize?
     for (auto &node : nodes) {
         // valid dTree (unique) pointers should only occur on leaf nodes
         if (node.bIsLeaf()) {
             Assert(node.dTree);
-            node.dTree->build(); // build the previous tree from the current one
+            node.dTree->prepare_for_refinement();
         } else {
             Assert(!node.dTree);
         }
@@ -313,15 +318,15 @@ void PathGuide<Float, Spectrum>::SpatialTree::prepare_for_refinement() {
 }
 
 MI_VARIANT
-void PathGuide<Float, Spectrum>::SpatialTree::reset_leaves(uint32_t max_depth,
-                                                           Float rho) {
+void PathGuide<Float, Spectrum>::SpatialTree::refine_leaves(uint32_t max_depth,
+                                                            Float rho) {
     /// TODO: parallelize?
     Assert(nodes.size() % 2 == 1); // should have odd #nodes (binary tree)
     for (auto &node : nodes) {
         // valid dTree (unique) pointers should only occur on leaf nodes
         if (node.bIsLeaf()) {
             Assert(node.dTree);
-            node.dTree->reset(max_depth, rho);
+            node.dTree->refine(max_depth, rho);
         } else {
             Assert(!node.dTree);
         }
@@ -330,9 +335,8 @@ void PathGuide<Float, Spectrum>::SpatialTree::reset_leaves(uint32_t max_depth,
 
 MI_VARIANT
 void PathGuide<Float, Spectrum>::SpatialTree::refine(const Float threshold) {
-    // traverse dTree via DFS and refine (subdivide) those leaves that surpass
-    // the weight threshold. Note this method is NOT thread-safe since it may
-    // reallocate the entire nodes vector (adding children)
+    // traverse dTree depth-first and refine (subdivide) those leaves that
+    // surpass the weight threshold.
     std::stack<uint32_t> stack;
     stack.push(0); // root node index
     while (!stack.empty()) {
@@ -360,28 +364,32 @@ void PathGuide<Float, Spectrum>::SpatialTree::refine(const Float threshold) {
 
 MI_VARIANT
 void PathGuide<Float, Spectrum>::SpatialTree::subdivide(const uint32_t idx) {
+    // Subdivides this node by creating 2 children and copying its dTree into
+    // them with ~half the samples. Careful with reallocation of nodes.
+
     auto parent = [this, idx]() -> STreeNode & { return nodes[idx]; };
-    // using this lambda for getting the "parent" by indexing directly into
-    // nodes[idx] rather than taking a pointer to nodes[idx] because the nodes
-    // array will resize (and potentially reallocate) which might invalidate
-    // any pointers or references!
     Assert(parent().bIsLeaf()); // has no children
     Assert(parent().dTree);     // should have a valid leaf node
-    DTreeWrapper *parent_tree   = parent().dTree.release();
-    const Float weight          = parent_tree->get_weight();
+
+    // get the dTree from the parent (released) since only leaves (children)
+    // should have valid dTrees.
+    DTreeWrapper *parent_tree = parent().dTree.release();
+    const Float weight        = parent_tree->get_weight();
+
     const uint32_t num_children = 2;
     Assert(parent().children.size() == num_children); // binary tree
+
     // resize (potentially reallocate) to make room for new children
     nodes.resize(nodes.size() + num_children); // prepare for new children
     for (uint32_t i = 0; i < num_children; i++) {
         const uint32_t child_idx = nodes.size() - num_children + i;
         parent().children[i]     = child_idx; // assign child
+
         // child copies the parent's dTree with half the weight and next axis
         struct STreeNode &child = nodes[child_idx];
         child.dTree             = std::make_unique<DTreeWrapper>(*parent_tree);
-        child.dTree->set_weight(weight / 2.f); // approx half the samples
-        // "iterate through axes on every pass" (0 for x, 1 for y, 2 for z)
-        child.xyz_axis = (parent().xyz_axis + 1) % 3;
+        child.dTree->set_weight(weight / 2.f);        // approx half the samples
+        child.xyz_axis = (parent().xyz_axis + 1) % 3; // iterate axes
     }
     delete parent_tree;          // save memory, only allocate on leaf nodes
     Assert(!parent().dTree);     // should be invalid bc not a leaf
@@ -398,7 +406,7 @@ PathGuide<Float, Spectrum>::SpatialTree::get_leaf(const Point3f &pos,
 
     Assert(nodes.size() > 0); // need at least a root node!
 
-    uint32_t idx = 0; // start at root node, descent down tree
+    uint32_t idx = 0; // start at root node, descend down tree
     while (!nodes[idx].bIsLeaf()) {
         const uint8_t ax = nodes[idx].xyz_axis;
         Assert(ax <= 2); // x, y, z
@@ -496,14 +504,14 @@ PathGuide<Float, Spectrum>::get_pass_spp(const uint32_t pass_idx) const {
 MI_VARIANT
 void PathGuide<Float, Spectrum>::refine(const Float thresh) {
     spatial_tree.refine(thresh);
-    spatial_tree.reset_leaves(DTree_maxdepth, rho);
+    spatial_tree.refine_leaves(DTree_maxdepth, rho);
 }
 
 MI_VARIANT void PathGuide<Float, Spectrum>::perform_refinement() {
     // performs one refinement iteration. This method should be called at the
     // end of each training pass since it is not thread safe
-    spatial_tree.prepare_for_refinement();
-    refinement_iter++;
+    spatial_tree.prepare_leaves_for_refinement();
+    refinement_count++;
 
     /**
      * From [1]: "The decision whether to split is driven only by the number of
@@ -513,9 +521,9 @@ MI_VARIANT void PathGuide<Float, Spectrum>::perform_refinement() {
      * amount of traced paths in the k-th iteration and c is derived from the
      * resolution of the quadtrees" Therefore each subsequent pass needs to
      * contain roughly c * sqrt(2^k) path vertices where c = STree_thresh,
-     * and k = refinement_iter
+     * and k = refinement_count
      */
-    refine(dr::sqrt(dr::pow(2.f, refinement_iter)) * STree_thresh);
+    refine(dr::sqrt(dr::pow(2.f, refinement_count)) * STree_thresh);
 }
 
 MI_VARIANT
@@ -542,9 +550,9 @@ void PathGuide<Float, Spectrum>::add_radiance(
         newPos = dr::maximum(newPos, spatial_tree.m_bounds.min);
         // traverse again down the spatial tree, but include jitter
         DTreeWrapper &jittered_dTree = spatial_tree.get_leaf(newPos);
-        jittered_dTree.add_sample(dir, luminance, weight);
+        jittered_dTree.add_lum(dir, luminance, weight);
     } else {
-        exact_dTree.add_sample(dir, luminance, weight);
+        exact_dTree.add_lum(dir, luminance, weight);
     }
 }
 
@@ -552,34 +560,37 @@ MI_VARIANT
 void PathGuide<Float, Spectrum>::add_throughput(const Point3f &pos,
                                                 const Vector3f &dir,
                                                 const Spectrum &result,
-                                                const Spectrum &throughput,
+                                                const Spectrum &thru,
                                                 const Float woPdf) {
-    /// NOTES:
-    // *result* stores the sum of all radiance up to this point.
-    // This includes a progressively accumulated *throughput* for
-    // the path from the point to the sensor as well as summing all
-    // the direct-connections from next-event-estimation
-    Spectrum path_radiance = result; // how much radiance is flowing
-                                     // through the path ending here
+    /* *result* stores the sum of all radiance up to this point. This includes
+     * the NEE chains created from branching out of the path. Since we want only
+     * the radiance along the path, we can subtract out the previous *result* */
+
+    // how much radiance is flowing from this bounce to the light (without NEE)
+    Spectrum bounce2light_rad = result;
+
+    // subtract the previous result to get only path-bounce radiance
     if (thru_vars.size() > 0) {
-        auto &[o, d, _, result_prev, T, woPdf] = thru_vars.back();
-        // delta between result computes the lighting for this path
-        path_radiance = result - result_prev;
+        const auto &[o, d, _, result_prev, T, woPdf] = thru_vars.back();
+        // subtracts the accumulated throughput from the previous bounce which
+        // would cancel out all all the previous NEE direct connections and
+        // leave us with the radiance from
+        bounce2light_rad = result - result_prev;
     }
-    thru_vars.emplace_back(pos, dir, path_radiance, result, throughput, woPdf);
+    thru_vars.emplace_back(pos, dir, bounce2light_rad, result, thru, woPdf);
 }
 
 MI_VARIANT
 void PathGuide<Float, Spectrum>::calc_radiance_from_thru(
     Sampler<Float, Spectrum> *sampler) {
-    /// NOTE:
-    // at each bounce we track how much radiance we have seen so far,
-    // and at the end we have the total radiance (including NEE) from
-    // end to eye so we can subtract what we've seen. This will give us
-    // the sum of the remaining NEE paths until the end (from the
-    // beginning) but we want the incident radiance starting from this
-    // bounce, so we then divide by the current throughput seen so far
-    // to cancel out those terms.
+    /*
+     * At each bounce we track how much radiance we have seen so far, and at the
+     * end we have the total radiance (including NEE) from the final bounce to
+     * the eye/sensor. The intermediate throughput variables we track handles
+     * getting the direct bounce radiance (no NEE) from the eye/sensor to the
+     * light source so we can then divide by the tracked throughput to get the
+     * incident radiance from each bounce along the path to the light source.
+     */
 
     auto lum = [](const Spectrum &spec) {
         if constexpr (is_rgb_v<Spectrum>) {
@@ -591,16 +602,17 @@ void PathGuide<Float, Spectrum>::calc_radiance_from_thru(
         }
     };
 
+    /// NOTE: Only want to track indirect lighting, otherwise pathguider
+    /// strongly prefers direct lighting
     bool final_found        = false;
     Spectrum final_radiance = 0.f;
     for (auto rev = thru_vars.rbegin(); rev != thru_vars.rend(); rev++) {
-        // add indirect lighting, o/w pathguide strongly prefers direct
         const auto &[o, d, path_radiance, _, thru, woPdf] = (*rev);
 
         if (!final_found && dr::all(lum(path_radiance) > 0.f)) {
-            // once the latest path-radiance is computed (last non-zero
-            // path-radiance) use this path radiance for the indirect
-            // lighting of all previous bounces
+            // once the latest (closest to the light source) bounce-to-light
+            // radiance is found (latest non-zero path_radiance) use this
+            // radiance for the indirect lighting of all previous bounces
             final_radiance = path_radiance;
             final_found    = true;
             continue; // don't record this bounce (direct illumination)
@@ -636,15 +648,14 @@ PathGuide<Float, Spectrum>::sample(const Vector3f &pos, Point2f sample) const {
     // logarithmic complexity to traverse both trees (spatial & directional)
     const DTreeWrapper &dTree = spatial_tree.get_leaf(pos);
     const Vector3f wo         = dTree.sample_dir(sample);
-    const Float pdf           = dTree.sample_pdf(wo);
+    const Float pdf           = dTree.get_pdf(wo);
     return { wo, pdf };
 }
 
 MI_VARIANT
-Float PathGuide<Float, Spectrum>::sample_pdf(const Point3f &pos,
-                                             const Vector3f &dir) const {
-    const DTreeWrapper &dTree = spatial_tree.get_leaf(pos);
-    return dTree.sample_pdf(dir);
+Float PathGuide<Float, Spectrum>::get_pdf(const Point3f &pos,
+                                          const Vector3f &dir) const {
+    return spatial_tree.get_leaf(pos).get_pdf(dir);
 }
 
 MI_IMPLEMENT_CLASS_VARIANT(PathGuide, Object, "pathguide")
