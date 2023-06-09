@@ -3822,7 +3822,7 @@
 
 .. py:data:: mitsuba.DEBUG
     :type: bool
-    :value: True
+    :value: False
 
 .. py:class:: mitsuba.DefaultFormatter
 
@@ -4297,6 +4297,13 @@
         Returns → bool:
             *no description available*
 
+    .. py:method:: mitsuba.Emitter.sampling_weight(self)
+
+        The emitter's sampling weight.
+
+        Returns → float:
+            *no description available*
+
 .. py:class:: mitsuba.EmitterFlags
 
     This list of flags is used to classify the different types of
@@ -4675,6 +4682,13 @@
             between the profile and the actual used sampling density function.
             In the case of emitters, the weight will include the emitted
             radiance.
+
+    .. py:method:: mitsuba.EmitterPtr.sampling_weight(self)
+
+        The emitter's sampling weight.
+
+        Returns → drjit.llvm.ad.Float:
+            *no description available*
 
     .. py:method:: mitsuba.EmitterPtr.select_(arg0, arg1, arg2)
 
@@ -5231,6 +5245,13 @@
             *no description available*
 
         Returns → :py:obj:`mitsuba.Bitmap`:
+            *no description available*
+
+    .. py:method:: mitsuba.Film.clear(self)
+
+        Clear the film contents to zero.
+
+        Returns → None:
             *no description available*
 
     .. py:method:: mitsuba.Film.create_block(self, size=[0, 0], normalize=False, borders=False)
@@ -10661,7 +10682,7 @@
 
 .. py:data:: mitsuba.MI_VERSION
     :type: str
-    :value: 3.2.1
+    :value: 3.3.0
 
 .. py:data:: mitsuba.MI_VERSION_MAJOR
     :type: int
@@ -10669,11 +10690,11 @@
 
 .. py:data:: mitsuba.MI_VERSION_MINOR
     :type: int
-    :value: 2
+    :value: 3
 
 .. py:data:: mitsuba.MI_VERSION_PATCH
     :type: int
-    :value: 1
+    :value: 0
 
 .. py:data:: mitsuba.MI_YEAR
     :type: str
@@ -12328,6 +12349,11 @@
         Returns → bool:
             *no description available*
 
+    .. py:method:: mitsuba.MemoryStream.raw_buffer(self)
+
+        Returns → bytes:
+            *no description available*
+
 .. py:class:: mitsuba.Mesh
 
     Base class: :py:obj:`mitsuba.Shape`
@@ -12457,15 +12483,22 @@
         Returns → :py:obj:`mitsuba.Point2f`:
             *no description available*
 
-    .. py:method:: mitsuba.Mesh.write_ply(self, filename)
+    .. py:method:: mitsuba.Mesh.write_ply(overloaded)
 
-        Export mesh as a binary PLY file
 
-        Parameter ``filename`` (str):
-            *no description available*
+        .. py:method:: write_ply(self, filename)
 
-        Returns → None:
-            *no description available*
+            Write the mesh to a binary PLY file
+
+            Parameter ``filename`` (str):
+                Target file path on disk
+
+        .. py:method:: write_ply(self, stream)
+
+            Write the mesh encoded in binary PLY format to a stream
+
+            Parameter ``stream`` (:py:obj:`mitsuba.Stream`):
+                Target stream that will receive the encoded output
 
 .. py:class:: mitsuba.MicrofacetDistribution
 
@@ -14069,6 +14102,16 @@
 
     .. py:method:: mitsuba.Properties.Type.name
         :property:
+
+    .. py:method:: mitsuba.Properties.as_string(self, arg0)
+
+        Return one of the parameters (converting it to a string if necessary)
+
+        Parameter ``arg0`` (str):
+            *no description available*
+
+        Returns → str:
+            *no description available*
 
     .. py:method:: mitsuba.Properties.copy_attribute(self, arg0, arg1, arg2)
 
@@ -17831,25 +17874,19 @@
 
     .. py:method:: mitsuba.Shape.eval_attribute(self, name, si, active=True)
 
-        Evaluate a specific shape attribute at the given surface interaction.
-
-        Shape attributes are user-provided fields that provide extra
-        information at an intersection. An example of this would be a per-
-        vertex or per-face color on a triangle mesh.
+        Returns whether this shape contains the specified attribute.
 
         Parameter ``name`` (str):
             Name of the attribute to evaluate
 
         Parameter ``si`` (:py:obj:`mitsuba.SurfaceInteraction`):
-            Surface interaction associated with the query
+            *no description available*
 
         Parameter ``active`` (drjit.llvm.ad.Bool):
             Mask to specify active lanes.
 
         Returns → :py:obj:`mitsuba.Color3f`:
-            An unpolarized spectral power distribution or reflectance value
-
-        The default implementation throws an exception.
+            *no description available*
 
     .. py:method:: mitsuba.Shape.eval_attribute_1(self, name, si, active=True)
 
@@ -17872,8 +17909,6 @@
         Returns → drjit.llvm.ad.Float:
             An scalar intensity or reflectance value
 
-        The default implementation throws an exception.
-
     .. py:method:: mitsuba.Shape.eval_attribute_3(self, name, si, active=True)
 
         Trichromatic evaluation of a shape attribute at the given surface
@@ -17894,8 +17929,6 @@
 
         Returns → :py:obj:`mitsuba.Color3f`:
             An trichromatic intensity or reflectance value
-
-        The default implementation throws an exception.
 
     .. py:method:: mitsuba.Shape.eval_parameterization(self, uv, ray_flags=14, active=True)
 
@@ -17923,6 +17956,28 @@
 
         Returns → :py:obj:`mitsuba.Medium`:
             *no description available*
+
+    .. py:method:: mitsuba.Shape.has_attribute(self, name, active=True)
+
+        Evaluate a specific shape attribute at the given surface interaction.
+
+        Shape attributes are user-provided fields that provide extra
+        information at an intersection. An example of this would be a per-
+        vertex or per-face color on a triangle mesh.
+
+        Parameter ``name`` (str):
+            Name of the attribute
+
+        Parameter ``si``:
+            Surface interaction associated with the query
+
+        Parameter ``active`` (drjit.llvm.ad.Bool):
+            Mask to specify active lanes.
+
+        Returns → drjit.llvm.ad.Bool:
+            An unpolarized spectral power distribution or reflectance value
+
+        The default implementation throws an exception.
 
     .. py:method:: mitsuba.Shape.id(self)
 
@@ -18258,25 +18313,19 @@
 
     .. py:method:: mitsuba.ShapePtr.eval_attribute(self, name, si, active=True)
 
-        Evaluate a specific shape attribute at the given surface interaction.
-
-        Shape attributes are user-provided fields that provide extra
-        information at an intersection. An example of this would be a per-
-        vertex or per-face color on a triangle mesh.
+        Returns whether this shape contains the specified attribute.
 
         Parameter ``name`` (str):
             Name of the attribute to evaluate
 
         Parameter ``si`` (:py:obj:`mitsuba.SurfaceInteraction`):
-            Surface interaction associated with the query
+            *no description available*
 
         Parameter ``active`` (drjit.llvm.ad.Bool):
             Mask to specify active lanes.
 
         Returns → :py:obj:`mitsuba.Color3f`:
-            An unpolarized spectral power distribution or reflectance value
-
-        The default implementation throws an exception.
+            *no description available*
 
     .. py:method:: mitsuba.ShapePtr.eval_attribute_1(self, name, si, active=True)
 
@@ -18299,8 +18348,6 @@
         Returns → drjit.llvm.ad.Float:
             An scalar intensity or reflectance value
 
-        The default implementation throws an exception.
-
     .. py:method:: mitsuba.ShapePtr.eval_attribute_3(self, name, si, active=True)
 
         Trichromatic evaluation of a shape attribute at the given surface
@@ -18321,8 +18368,6 @@
 
         Returns → :py:obj:`mitsuba.Color3f`:
             An trichromatic intensity or reflectance value
-
-        The default implementation throws an exception.
 
     .. py:method:: mitsuba.ShapePtr.eval_parameterization(self, uv, ray_flags=14, active=True)
 
@@ -18367,6 +18412,28 @@
 
         Returns → :py:obj:`mitsuba.ShapePtr`:
             *no description available*
+
+    .. py:method:: mitsuba.ShapePtr.has_attribute(self, name, active=True)
+
+        Evaluate a specific shape attribute at the given surface interaction.
+
+        Shape attributes are user-provided fields that provide extra
+        information at an intersection. An example of this would be a per-
+        vertex or per-face color on a triangle mesh.
+
+        Parameter ``name`` (str):
+            Name of the attribute
+
+        Parameter ``si``:
+            Surface interaction associated with the query
+
+        Parameter ``active`` (drjit.llvm.ad.Bool):
+            Mask to specify active lanes.
+
+        Returns → drjit.llvm.ad.Bool:
+            An unpolarized spectral power distribution or reflectance value
+
+        The default implementation throws an exception.
 
     .. py:method:: mitsuba.ShapePtr.interior_medium(self)
 
@@ -26069,6 +26136,71 @@
 
         Zero-initializes the internal state associated with a parameter
 
+.. py:class:: mitsuba.ad.LargeSteps
+
+    Implementation of the algorithm described in the paper "Large Steps in
+    Inverse Rendering of Geometry" (Nicolet et al. 2021).
+
+    It consists in computing a latent variable u = (I + λL) v from the vertex
+    positions v, where L is the (combinatorial) Laplacian matrix of the input
+    mesh. Optimizing these variables instead of the vertex positions allows to
+    diffuse gradients on the surface, which helps fight their sparsity.
+
+    This class builds the system matrix (I + λL) for a given mesh and hyper
+    parameter λ, and computes its Cholesky factorization.
+
+    It can then convert vertex coordinates back and forth between their
+    cartesian and differential representations. Both transformations are
+    differentiable, meshes can therefore be optimized by using the differential
+    form as a latent variable.
+
+    .. py:method:: __init__()
+
+        Build the system matrix and its Cholesky factorization.
+        
+        Parameter ``verts`` (``mitsuba.Float``):
+            Vertex coordinates of the mesh.
+        
+        Parameter ``faces`` (``mitsuba.UInt``):
+            Face indices of the mesh.
+        
+        Parameter ``lambda_`` (``float``):
+            The hyper parameter λ. This controls how much gradients are diffused
+            on the surface. this value should increase with the tesselation of
+            the mesh.
+        
+
+        
+    .. py:method:: mitsuba.ad.LargeSteps.to_differential()
+
+        Convert vertex coordinates to their differential form: u = (I + λL) v.
+
+        This method typically only needs to be called once per mesh, to obtain
+        the latent variable before optimization.
+
+        Parameter ``v`` (``mitsuba.Float``):
+            Vertex coordinates of the mesh.
+
+        Returns ``mitsuba.Float`:
+            Differential form of v.
+
+    .. py:method:: mitsuba.ad.LargeSteps.from_differential()
+
+        Convert differential coordinates back to their cartesian form: v = (I +
+        λL)⁻¹ u.
+
+        This is done by solving the linear system (I + λL) v = u using the
+        previously computed Cholesky factorization.
+
+        This method is typically called at each iteration of the optimization,
+        to update the mesh coordinates before rendering.
+
+        Parameter ``u`` (``mitsuba.Float``):
+            Differential form of v.
+
+        Returns ``mitsuba.Float`:
+            Vertex coordinates of the mesh.
+
 .. py:class:: mitsuba.ad.Optimizer
 
     Base class of all gradient-based optimizers.
@@ -26739,6 +26871,53 @@
 
     Compute the Multiple Importance Sampling (MIS) weight given the densities
     of two sampling strategies according to the power heuristic.
+
+.. py:class:: mitsuba.ad.largesteps.SolveCholesky
+
+    DrJIT custom operator to solve a linear system using a Cholesky factorization.
+
+    .. py:method:: mitsuba.ad.largesteps.SolveCholesky.eval()
+
+        Evaluate the custom function in primal mode.
+
+        The inputs will be detached from the AD graph, and the output *must* also be
+        detached.
+
+        .. danger::
+
+            This method must be overriden, no default implementation provided.
+
+        Returns → object:
+            *no description available*
+
+    .. py:method:: mitsuba.ad.largesteps.SolveCholesky.forward()
+
+        Evaluated forward-mode derivatives.
+
+        .. danger::
+
+            This method must be overriden, no default implementation provided.
+
+    .. py:method:: mitsuba.ad.largesteps.SolveCholesky.backward()
+
+        Evaluated backward-mode derivatives.
+
+        .. danger::
+
+            This method must be overriden, no default implementation provided.
+
+    .. py:method:: mitsuba.ad.largesteps.SolveCholesky.name()
+
+        Return a descriptive name of the ``CustomOp`` instance.
+
+        The name returned by this method is used in the GraphViz output.
+
+        If not overriden, this method returns ``"CustomOp[unnamed]"``.
+
+.. py:function:: mitsuba.ad.largesteps.mesh_laplacian()
+
+    Compute the index and data arrays of the (combinatorial) Laplacian matrix of
+    a given mesh.
 
 .. py:function:: mitsuba.ad.reparameterize_ray(scene, rng, params, ray, num_rays=4, kappa=100000.0, exponent=3.0, antithetic=False, unroll=False, active=True)
 
@@ -27546,7 +27725,8 @@
         XML file be written back to disk?
 
     Parameter ``parallel`` (bool):
-        Whether the loading should be executed on multiple threads in parallel
+        Whether the loading should be executed on multiple threads in
+        parallel
 
     Returns → object:
         *no description available*
@@ -27572,7 +27752,7 @@
         Parameter ``value`` (:py:obj:`mitsuba.Color3f`):
             *no description available*
 
-        Parameter ``wavelengths`` (:py:obj:`mitsuba.Color3f`):
+        Parameter ``wavelengths`` (:py:obj:`mitsuba.Color0f`):
             *no description available*
 
         Parameter ``active`` (drjit.llvm.ad.Bool):
@@ -29925,6 +30105,14 @@
     Returns → str:
         *no description available*
 
+.. py:function:: mitsuba.variant_context()
+
+    Temporarily override the active variant. Arguments are interpreted as
+    they are in :func:`mitsuba.set_variant`.
+
+    Returns → None:
+        *no description available*
+
 .. py:function:: mitsuba.variants()
 
     Return a list of all variants that have been compiled
@@ -30396,7 +30584,7 @@
 
 .. py:function:: mitsuba.warp.tent_to_interval(value)
 
-    Warp a uniformly distributed sample on [0, 1] to a tent distribution
+    Warp a tent distribution to a uniformly distributed sample on [0, 1]
 
     Parameter ``value`` (drjit.llvm.ad.Float):
         *no description available*
