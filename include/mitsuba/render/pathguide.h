@@ -189,7 +189,7 @@ private: /* hyperparameters (from the paper recommendations)*/
      * and directional filtering allowed for a better learned approximation
      * while avoiding artifacts (hence a smaller threshold of 4000)
      */
-    const Float spatial_tree_thresh = 4000.f;
+    const Float STree_thresh = 4000.f;
 
     /**
      * \brief Maximum number of children in leaf d-trees.
@@ -198,7 +198,7 @@ private: /* hyperparameters (from the paper recommendations)*/
      * for guiding towards extremely narrow radiance sources without precision
      * issues" [1]
      */
-    const uint32_t max_DTree_depth = 20;
+    const uint32_t DTree_maxdepth = 20;
 
     /**
      * \brief Fraction of energy from the previous tree to use for refiment
@@ -374,11 +374,11 @@ private: /* DirectionTree (and friends) declaration */
         static uint8_t get_child_idx(Point2f &p);
 
     private:
-        struct DirTree {
-            DirTree() { nodes.resize(1); } // ensure root node exists
+        struct DirectionTree {
+            DirectionTree() { nodes.resize(1); } // ensure root node exists
 
-            struct DirNode {
-                DirNode() = default;
+            struct DTreeNode {
+                DTreeNode() = default;
                 std::array<QuantizedAtomicFloatAccumulator, 4> data;
                 std::array<uint32_t, 4> children{};
                 bool sample(uint32_t &quadrant, Float &r1) const;
@@ -389,7 +389,7 @@ private: /* DirectionTree (and friends) declaration */
                                 const Float lum);
             Float get_pdf_helper(const uint32_t node_idx, Point2f &pos) const;
             QuantizedAtomicFloatAccumulator weight, sum;
-            std::vector<DirNode> nodes;
+            std::vector<DTreeNode> nodes;
         };
 
         /**
@@ -406,21 +406,42 @@ private: /* DirectionTree (and friends) declaration */
          * the same spatial tree for both distributions, where each leaf
          * contains two directional quadtrees; one for L^{k−1} and one for L^k
          */
-        DirTree current, prev;
+        DirectionTree current, prev;
     };
 
 private: /* SpatialTree (whose leaves are DirectionTrees) declaration */
     class SpatialTree {
     public:
+        /** \brief Constructor needs to allocate and initialize the root node */
         SpatialTree();
-        void begin_next_tree_iteration();
-        void refine(const Float sample_threshold);
+
+        /** \brief Prepares the direction tree leaves for refinement */
+        void prepare_for_refinement();
+
+        /**
+         * \brief traverse and find leaf nodes that quality for refinement
+         *
+         * Refinement of the tree is just when a node has enough samples and is
+         * considered "heavy" by the threshold, then it is subdivided (split)
+         * into two children that each copy ~half of its samples so this region
+         * has more granularity.
+         */
+        void refine(const Float refine_threshold);
+
+        /**
+         * \brief Reset all the leaves in the tree
+         *
+         * "Resetting" the nodes involves calling reset on their corresponding
+         * dTree. This method is not thread safe.
+         */
         void reset_leaves(const uint32_t max_depth, const Float rho);
 
+        /** \brief find the leaf node (dir tree) that contains this position */
         const DTreeWrapper &get_leaf(const Point3f &pos,
                                      Vector3f *size = nullptr) const;
+
+        /** \brief non-const overload of get_leaf which uses the same logic */
         DTreeWrapper &get_leaf(const Point3f &pos, Vector3f *size = nullptr) {
-            // non-const overload of (const) get_leaf which uses the same logic
             const auto *constThis  = const_cast<const SpatialTree *>(this);
             const auto &constDTree = constThis->get_leaf(pos, size);
             return const_cast<DTreeWrapper &>(constDTree);
@@ -430,7 +451,8 @@ private: /* SpatialTree (whose leaves are DirectionTrees) declaration */
         ScalarBoundingBox3f m_bounds;
 
     private:
-        struct SNode {
+        /** \brief Spatial (binary) tree nodes, leaves contain DTrees */
+        struct STreeNode {
             // only *leaf* nodes should have a valid dTree unique ptr
             std::unique_ptr<DTreeWrapper> dTree; // direction tree (2D domain)
             std::array<uint32_t, 2> children{};  // 2 children for binary tree
@@ -439,9 +461,10 @@ private: /* SpatialTree (whose leaves are DirectionTrees) declaration */
             inline bool bIsLeaf() const { return children[0] == children[1]; }
         };
 
+        /** \brief clones the parent node into 2 children with 1/2 samples */
         void subdivide(const uint32_t parent_idx);
-        // representation of the binary tree through an array of indices
-        std::vector<SNode> nodes;
+        // representation of the binary tree through an array
+        std::vector<STreeNode> nodes;
     } spatial_tree;
 };
 
