@@ -5,6 +5,236 @@
 
 NAMESPACE_BEGIN(mitsuba)
 
+//-------------------PathGuide-------------------//
+
+MI_VARIANT
+PathGuide<Float, Spectrum>::PathGuide(const float training_budget,
+                                      const float p_jitter)
+    : m_training_budget(training_budget), m_jitter_prob(p_jitter) {
+    if (m_training_budget < 0.f)
+        Log(Warn, "Path guide cannot train for negative samples. Disabling "
+                  "path guider.");
+    if (m_training_budget >= 1.f) {
+        Log(Warn, "Using entirety of sampling budget for training the path "
+                  "guider. This means none of the samples will be used for "
+                  "(inference) rendering the final image!");
+    }
+}
+
+MI_VARIANT void
+PathGuide<Float, Spectrum>::initialize(const uint32_t scene_spp,
+                                       const ScalarBoundingBox3f &bbox) {
+    // calculate the number of refinement operations to perform (each one with
+    // 2x spp of before) to approximately match the training threshold
+    total_train_spp = static_cast<uint32_t>(scene_spp * m_training_budget);
+    // number of iterations ("render passes") where spp is doubled for training
+    num_training_refinements = dr::log2i(total_train_spp);
+    // any overflow from the desired training budget that will be included in
+    // the final training pass (see get_pass_spp(uint32_t))
+    spp_overflow = total_train_spp - dr::pow(2, num_training_refinements);
+    if (spp_overflow > 0) {
+        /* total_train_spp cant perfectly fit in the geometric series (not a
+         * power of 2), so we have two options: either tack on the overflow to
+         * the end (final pass) or run an extra pass with only the overflow. A
+         * fine heuristic for this is whether or not the overflow is larger than
+         * the spp in the (geometric) final pass. As this should be enough to
+         * constitute its own pass. We want to avoid rendering a new pass with a
+         * very small spp at the end if possible (which may increase variance)
+         */
+        const uint32_t final_spp = dr::pow(2, num_training_refinements - 1);
+        if (spp_overflow < final_spp) { // if the overflow is not large enough
+            spp_overflow += final_spp;  // append any overflow to the final pass
+            // (See get_pass_spp: the final pass spp is always spp_overflow)
+        } else {
+            num_training_refinements++; // include another pass for the overflow
+        }
+    }
+
+    if (num_training_refinements == 0) {
+        Log(Warn,
+            "Calculated maximum number of refinements is 0. Training budget "
+            "is too low, this will result in an ineffective path guider "
+            "with potentially higher variance than BSDF sampling.");
+    }
+    spatial_tree.m_bounds = bbox;
+    refine(STree_thresh);
+}
+
+MI_VARIANT uint32_t
+PathGuide<Float, Spectrum>::get_pass_spp(const uint32_t pass_idx) const {
+    // geometrically increasing => double spp on each iteration
+    uint32_t spp = dr::pow(2, pass_idx);
+    // if we need to include some overflow in the final pass
+    if (spp_overflow && pass_idx == num_training_refinements - 1) {
+        return spp_overflow;
+    }
+    if (pass_idx >= num_training_refinements) {
+        Log(Warn,
+            "Path guider has reached past the expected number of samples for "
+            "training (%d). Returning 0 spp for this pass (%d)",
+            num_training_refinements, pass_idx);
+        return 0; // should be done training!
+    }
+    return spp;
+}
+
+MI_VARIANT
+void PathGuide<Float, Spectrum>::refine(const Float thresh) {
+    spatial_tree.refine(thresh);
+    spatial_tree.refine_leaves(DTree_maxdepth, rho);
+}
+
+MI_VARIANT void PathGuide<Float, Spectrum>::perform_refinement() {
+    // performs one refinement iteration. This method should be called at the
+    // end of each training pass since it is not thread safe
+    spatial_tree.prepare_leaves_for_refinement();
+    refinement_count++;
+
+    /**
+     * From [1]: "The decision whether to split is driven only by the number of
+     * path vertices that were recorded in the volume of the node in the
+     * previous iteration... Specifically, we split a node if there have been at
+     * least c * sqrt(2^k) path vertices, where 2^k is proportional to the
+     * amount of traced paths in the k-th iteration and c is derived from the
+     * resolution of the quadtrees" Therefore each subsequent pass needs to
+     * contain roughly c * sqrt(2^k) path vertices where c = STree_thresh,
+     * and k = refinement_count
+     */
+    refine(dr::sqrt(dr::pow(2.f, refinement_count)) * STree_thresh);
+}
+
+MI_VARIANT
+void PathGuide<Float, Spectrum>::add_radiance(
+    const Point3f &pos, const Vector3f &dir, const Float luminance,
+    Sampler<Float, Spectrum> *sampler) {
+    if (dr::all(!dr::isfinite(luminance) || luminance < 0.f))
+        return;
+    Point3f newPos     = pos;
+    const Float weight = 0.25f;
+    Vector3f neigh_size(1, 1, 1);
+    // get exact leaf (direction tree)
+    DTreeWrapper &exact_dTree = spatial_tree.get_leaf(pos, &neigh_size);
+    if (sampler != nullptr && dr::all(sampler->next_1d() < m_jitter_prob)) {
+        // perform stochastic filtering on spatial tree by jittering within
+        // bounding box of leaf node containing pos
+        Vector3f offset = neigh_size;
+        offset.x() *= sampler->next_1d() - 0.5f;
+        offset.y() *= sampler->next_1d() - 0.5f;
+        offset.z() *= sampler->next_1d() - 0.5f;
+        newPos += offset;
+        // ensure the new position still lies within the tree bounds
+        newPos = dr::minimum(newPos, spatial_tree.m_bounds.max);
+        newPos = dr::maximum(newPos, spatial_tree.m_bounds.min);
+        // traverse again down the spatial tree, but include jitter
+        DTreeWrapper &jittered_dTree = spatial_tree.get_leaf(newPos);
+        jittered_dTree.add_lum(dir, luminance, weight);
+    } else {
+        exact_dTree.add_lum(dir, luminance, weight);
+    }
+}
+
+MI_VARIANT
+void PathGuide<Float, Spectrum>::add_throughput(const Point3f &pos,
+                                                const Vector3f &dir,
+                                                const Spectrum &result,
+                                                const Spectrum &thru,
+                                                const Float woPdf) {
+    /* *result* stores the sum of all radiance up to this point. This includes
+     * the NEE chains created from branching out of the path. Since we want only
+     * the radiance along the path, we can subtract out the previous *result* */
+
+    // how much radiance is flowing from this bounce to the light (without NEE)
+    Spectrum bounce2light_rad = result;
+
+    // subtract the previous result to get only path-bounce radiance
+    if (thru_vars.size() > 0) {
+        const auto &[o, d, _, result_prev, T, woPdf] = thru_vars.back();
+        // subtracts the accumulated throughput from the previous bounce which
+        // would cancel out all all the previous NEE direct connections and
+        // leave us with the radiance from
+        bounce2light_rad = result - result_prev;
+    }
+    thru_vars.emplace_back(pos, dir, bounce2light_rad, result, thru, woPdf);
+}
+
+MI_VARIANT
+void PathGuide<Float, Spectrum>::calc_radiance_from_thru(
+    Sampler<Float, Spectrum> *sampler) {
+    /*
+     * At each bounce we track how much radiance we have seen so far, and at the
+     * end we have the total radiance (including NEE) from the final bounce to
+     * the eye/sensor. The intermediate throughput variables we track handles
+     * getting the direct bounce radiance (no NEE) from the eye/sensor to the
+     * light source so we can then divide by the tracked throughput to get the
+     * incident radiance from each bounce along the path to the light source.
+     */
+
+    auto lum = [](const Spectrum &spec) {
+        if constexpr (is_rgb_v<Spectrum>) {
+            return luminance(spec);
+        } else if constexpr (is_monochromatic_v<Spectrum>) {
+            return spec[0];
+        } else {
+            return dr::mean(spec);
+        }
+    };
+
+    /// NOTE: Only want to track indirect lighting, otherwise pathguider
+    /// strongly prefers direct lighting
+    bool final_found        = false;
+    Spectrum final_radiance = 0.f;
+    for (auto rev = thru_vars.rbegin(); rev != thru_vars.rend(); rev++) {
+        const auto &[o, d, path_radiance, _, thru, woPdf] = (*rev);
+
+        if (!final_found && dr::all(lum(path_radiance) > 0.f)) {
+            // once the latest (closest to the light source) bounce-to-light
+            // radiance is found (latest non-zero path_radiance) use this
+            // radiance for the indirect lighting of all previous bounces
+            final_radiance = path_radiance;
+            final_found    = true;
+            continue; // don't record this bounce (direct illumination)
+        }
+        // calculate radiance from this bounce to the light source
+        const Spectrum radiance   = final_radiance / thru;
+        const Spectrum irradiance = radiance / woPdf;
+        this->add_radiance(o, d, lum(irradiance), sampler);
+    }
+    thru_vars.clear();
+    update_progress();
+}
+
+MI_VARIANT
+void PathGuide<Float, Spectrum>::update_progress() {
+    if (progress == nullptr)
+        return;
+    const uint32_t spp_done = (++atomic_spp_count); // atomic incr and fetch
+    // should have 100 updates (update the progress bar every 1%)
+    // (these are static since the values can be cached)
+    const static uint32_t total_spp   = total_train_spp * screensize;
+    const static uint32_t update_iter = total_spp / 100;
+    // update a maximum of 100 times
+    if (update_iter == 0 || spp_done % update_iter == 0) {
+        // update the progress meter (0.f to 1.f)
+        progress->update(static_cast<float>(spp_done) / total_spp);
+    }
+}
+
+MI_VARIANT
+std::pair<typename PathGuide<Float, Spectrum>::Vector3f, Float>
+PathGuide<Float, Spectrum>::sample(const Vector3f &pos, Point2f sample) const {
+    // logarithmic complexity to traverse both trees (spatial & directional)
+    const DTreeWrapper &dTree = spatial_tree.get_leaf(pos);
+    const Vector3f wo         = dTree.sample_dir(sample);
+    const Float pdf           = dTree.get_pdf(wo);
+    return { wo, pdf };
+}
+
+MI_VARIANT
+Float PathGuide<Float, Spectrum>::get_pdf(const Point3f &pos,
+                                          const Vector3f &dir) const {
+    return spatial_tree.get_leaf(pos).get_pdf(dir);
+}
+
 //-------------------DTreeWrapper-------------------//
 
 MI_VARIANT
@@ -425,237 +655,6 @@ PathGuide<Float, Spectrum>::SpatialTree::get_leaf(const Point3f &pos,
     Assert(nodes[idx].dTree); // should be valid
     const DTreeWrapper &dTree = (*nodes[idx].dTree.get());
     return dTree;
-}
-
-//-------------------PathGuide-------------------//
-
-MI_VARIANT
-PathGuide<Float, Spectrum>::PathGuide(const float training_budget,
-                                      const float p_jitter)
-    : m_training_budget(training_budget), m_jitter_prob(p_jitter) {
-    if (m_training_budget < 0.f)
-        Log(Warn, "Path guide cannot train for negative samples. Disabling "
-                  "path guider.");
-    if (m_training_budget >= 1.f) {
-        Log(Warn, "Using entirety of sampling budget for training the path "
-                  "guider. This means none of the samples will be used for "
-                  "(inference) rendering the final image!");
-    }
-}
-
-MI_VARIANT void
-PathGuide<Float, Spectrum>::initialize(const uint32_t scene_spp,
-                                       const ScalarBoundingBox3f &bbox) {
-    // calculate the number of refinement operations to perform (each one with
-    // 2x spp of before) to approximately match the training threshold
-    total_train_spp = static_cast<uint32_t>(scene_spp * m_training_budget);
-    // number of iterations ("render passes") where spp is doubled for training
-    num_training_refinements = dr::log2i(total_train_spp);
-    // any overflow from the desired training budget that will be included in
-    // the final training pass (see get_pass_spp(uint32_t))
-    spp_overflow = total_train_spp - dr::pow(2, num_training_refinements);
-    if (spp_overflow > 0) {
-        // total_train_spp cant perfectly fit in the geometric series (not a
-        // power of 2), so we have two options: either tack on the overflow to
-        // the end (final pass) or run an extra pass with only the overflow. A
-        // fine heuristic for this is whether or not the overflow is larger than
-        // the spp in the (geometric) final pass. As this should be enough to
-        // constitute its own pass. We want to avoid rendering a new pass with a
-        // very small spp at the end if possible (which harms the learned
-        // distribution approximation)
-        const uint32_t final_spp = dr::pow(2, num_training_refinements - 1);
-        if (spp_overflow < final_spp) { // if the overflow is large enough
-            // append any overflow to the final pass
-            spp_overflow += final_spp;
-        } else {
-            // include another pass for the overflow
-            num_training_refinements++;
-        }
-    }
-
-    if (num_training_refinements == 0) {
-        Log(Warn,
-            "Calculated maximum number of refinements is 0. Training budget "
-            "is too low, this will result in an ineffective path guider "
-            "with potentially higher variance than BSDF sampling.");
-    }
-    spatial_tree.m_bounds = bbox;
-    refine(STree_thresh);
-}
-
-MI_VARIANT uint32_t
-PathGuide<Float, Spectrum>::get_pass_spp(const uint32_t pass_idx) const {
-    // geometrically increasing => double spp on each iteration
-    uint32_t spp = dr::pow(2, pass_idx);
-    // if we need to include some overflow in the final pass
-    if (spp_overflow && pass_idx == num_training_refinements - 1) {
-        return spp_overflow;
-    }
-    if (pass_idx >= num_training_refinements) {
-        Log(Warn,
-            "Path guider has reached past the expected number of samples for "
-            "training (%d). Returning 0 spp for this pass (%d)",
-            num_training_refinements, pass_idx);
-        return 0; // should be done training!
-    }
-    return spp;
-}
-
-MI_VARIANT
-void PathGuide<Float, Spectrum>::refine(const Float thresh) {
-    spatial_tree.refine(thresh);
-    spatial_tree.refine_leaves(DTree_maxdepth, rho);
-}
-
-MI_VARIANT void PathGuide<Float, Spectrum>::perform_refinement() {
-    // performs one refinement iteration. This method should be called at the
-    // end of each training pass since it is not thread safe
-    spatial_tree.prepare_leaves_for_refinement();
-    refinement_count++;
-
-    /**
-     * From [1]: "The decision whether to split is driven only by the number of
-     * path vertices that were recorded in the volume of the node in the
-     * previous iteration... Specifically, we split a node if there have been at
-     * least c * sqrt(2^k) path vertices, where 2^k is proportional to the
-     * amount of traced paths in the k-th iteration and c is derived from the
-     * resolution of the quadtrees" Therefore each subsequent pass needs to
-     * contain roughly c * sqrt(2^k) path vertices where c = STree_thresh,
-     * and k = refinement_count
-     */
-    refine(dr::sqrt(dr::pow(2.f, refinement_count)) * STree_thresh);
-}
-
-MI_VARIANT
-void PathGuide<Float, Spectrum>::add_radiance(
-    const Point3f &pos, const Vector3f &dir, const Float luminance,
-    Sampler<Float, Spectrum> *sampler) {
-    if (dr::all(!dr::isfinite(luminance) || luminance < 0.f))
-        return;
-    Point3f newPos     = pos;
-    const Float weight = 0.25f;
-    Vector3f neigh_size(1, 1, 1);
-    // get exact leaf (direction tree)
-    DTreeWrapper &exact_dTree = spatial_tree.get_leaf(pos, &neigh_size);
-    if (sampler != nullptr && dr::all(sampler->next_1d() < m_jitter_prob)) {
-        // perform stochastic filtering on spatial tree by jittering within
-        // bounding box of leaf node containing pos
-        Vector3f offset = neigh_size;
-        offset.x() *= sampler->next_1d() - 0.5f;
-        offset.y() *= sampler->next_1d() - 0.5f;
-        offset.z() *= sampler->next_1d() - 0.5f;
-        newPos += offset;
-        // ensure the new position still lies within the tree bounds
-        newPos = dr::minimum(newPos, spatial_tree.m_bounds.max);
-        newPos = dr::maximum(newPos, spatial_tree.m_bounds.min);
-        // traverse again down the spatial tree, but include jitter
-        DTreeWrapper &jittered_dTree = spatial_tree.get_leaf(newPos);
-        jittered_dTree.add_lum(dir, luminance, weight);
-    } else {
-        exact_dTree.add_lum(dir, luminance, weight);
-    }
-}
-
-MI_VARIANT
-void PathGuide<Float, Spectrum>::add_throughput(const Point3f &pos,
-                                                const Vector3f &dir,
-                                                const Spectrum &result,
-                                                const Spectrum &thru,
-                                                const Float woPdf) {
-    /* *result* stores the sum of all radiance up to this point. This includes
-     * the NEE chains created from branching out of the path. Since we want only
-     * the radiance along the path, we can subtract out the previous *result* */
-
-    // how much radiance is flowing from this bounce to the light (without NEE)
-    Spectrum bounce2light_rad = result;
-
-    // subtract the previous result to get only path-bounce radiance
-    if (thru_vars.size() > 0) {
-        const auto &[o, d, _, result_prev, T, woPdf] = thru_vars.back();
-        // subtracts the accumulated throughput from the previous bounce which
-        // would cancel out all all the previous NEE direct connections and
-        // leave us with the radiance from
-        bounce2light_rad = result - result_prev;
-    }
-    thru_vars.emplace_back(pos, dir, bounce2light_rad, result, thru, woPdf);
-}
-
-MI_VARIANT
-void PathGuide<Float, Spectrum>::calc_radiance_from_thru(
-    Sampler<Float, Spectrum> *sampler) {
-    /*
-     * At each bounce we track how much radiance we have seen so far, and at the
-     * end we have the total radiance (including NEE) from the final bounce to
-     * the eye/sensor. The intermediate throughput variables we track handles
-     * getting the direct bounce radiance (no NEE) from the eye/sensor to the
-     * light source so we can then divide by the tracked throughput to get the
-     * incident radiance from each bounce along the path to the light source.
-     */
-
-    auto lum = [](const Spectrum &spec) {
-        if constexpr (is_rgb_v<Spectrum>) {
-            return luminance(spec);
-        } else if constexpr (is_monochromatic_v<Spectrum>) {
-            return spec[0];
-        } else {
-            return dr::mean(spec);
-        }
-    };
-
-    /// NOTE: Only want to track indirect lighting, otherwise pathguider
-    /// strongly prefers direct lighting
-    bool final_found        = false;
-    Spectrum final_radiance = 0.f;
-    for (auto rev = thru_vars.rbegin(); rev != thru_vars.rend(); rev++) {
-        const auto &[o, d, path_radiance, _, thru, woPdf] = (*rev);
-
-        if (!final_found && dr::all(lum(path_radiance) > 0.f)) {
-            // once the latest (closest to the light source) bounce-to-light
-            // radiance is found (latest non-zero path_radiance) use this
-            // radiance for the indirect lighting of all previous bounces
-            final_radiance = path_radiance;
-            final_found    = true;
-            continue; // don't record this bounce (direct illumination)
-        }
-        // calculate radiance from this bounce to the light source
-        const Spectrum radiance   = final_radiance / thru;
-        const Spectrum irradiance = radiance / woPdf;
-        this->add_radiance(o, d, lum(irradiance), sampler);
-    }
-    thru_vars.clear();
-    update_progress();
-}
-
-MI_VARIANT
-void PathGuide<Float, Spectrum>::update_progress() {
-    if (progress == nullptr)
-        return;
-    const uint32_t spp_done = (++atomic_spp_count); // atomic incr and fetch
-    // should have 100 updates (update the progress bar every 1%)
-    // (these are static since the values can be cached)
-    const static uint32_t total_spp   = total_train_spp * screensize;
-    const static uint32_t update_iter = total_spp / 100;
-    // update a maximum of 100 times
-    if (update_iter == 0 || spp_done % update_iter == 0) {
-        // update the progress meter (0.f to 1.f)
-        progress->update(static_cast<float>(spp_done) / total_spp);
-    }
-}
-
-MI_VARIANT
-std::pair<typename PathGuide<Float, Spectrum>::Vector3f, Float>
-PathGuide<Float, Spectrum>::sample(const Vector3f &pos, Point2f sample) const {
-    // logarithmic complexity to traverse both trees (spatial & directional)
-    const DTreeWrapper &dTree = spatial_tree.get_leaf(pos);
-    const Vector3f wo         = dTree.sample_dir(sample);
-    const Float pdf           = dTree.get_pdf(wo);
-    return { wo, pdf };
-}
-
-MI_VARIANT
-Float PathGuide<Float, Spectrum>::get_pdf(const Point3f &pos,
-                                          const Vector3f &dir) const {
-    return spatial_tree.get_leaf(pos).get_pdf(dir);
 }
 
 MI_IMPLEMENT_CLASS_VARIANT(PathGuide, Object, "pathguide")
