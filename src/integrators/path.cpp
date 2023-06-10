@@ -247,18 +247,6 @@ public:
             bsdf_weight = si.to_world_mueller(bsdf_weight, -bsdf_sample.wo, si.wi);
 
             ray = si.spawn_ray(si.to_world(bsdf_sample.wo));
-            /// TODO: remove when upstreaming
-            if (pg && pg->enabled() && pg->done_training()) {
-                #if DEBUG
-                valid_ray=true;
-                auto rgb2spec = [](Spectrum &s, const Color3f &c){
-                    static_assert(!is_monochromatic_v<Spectrum>, "Is spectral");
-                    s[0] = c.x(); s[1] = c.y(); s[2] = c.z();
-                };
-                rgb2spec(result, dr::clamp(ray.d, 0.f, 1.f));
-                break;
-                #endif
-            }
 
             /* When the path tracer is differentiated, we must be careful that
                the generated Monte Carlo samples are detached (i.e. don't track
