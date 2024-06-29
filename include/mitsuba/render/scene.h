@@ -6,6 +6,7 @@
 #include <mitsuba/render/shapegroup.h>
 #include <mitsuba/render/fwd.h>
 #include <mitsuba/render/sensor.h>
+#include <mitsuba/render/pathguide.h>
 
 NAMESPACE_BEGIN(mitsuba)
 
@@ -634,6 +635,16 @@ protected:
     std::vector<ref<Shape>> m_silhouette_shapes;
     DynamicBuffer<ShapePtr> m_silhouette_shapes_dr;
     std::unique_ptr<DiscreteDistribution<Float>> m_silhouette_distr = nullptr;
+
+    /**
+     * \brief Path guider to approximately importance sample indirect lighting
+     *
+     * Mostly follows the details in:
+     * "Practical Path Guiding for Efficient Light-Transport Simulation"
+     *     Thomas Muller, Markus Gross, Jan Novak
+     *     Proceedings of EGSR 2017, vol. 36, no.4
+     */
+    ref<PathGuide<Float, Spectrum>> m_pathguider;
 
     bool m_shapes_grad_enabled;
 };

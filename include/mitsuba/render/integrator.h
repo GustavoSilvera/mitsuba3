@@ -14,6 +14,7 @@
 #include <mitsuba/render/scene.h>
 #include <mitsuba/render/shape.h>
 #include <mitsuba/render/medium.h>
+#include <mitsuba/render/pathguide.h>
 
 NAMESPACE_BEGIN(mitsuba)
 
@@ -289,6 +290,12 @@ public:
     //! @}
     // =========================================================================
 
+    /// \brief Perform any preprocessing prior to rendering
+    virtual void preprocess(Scene *scene,
+                            Sensor *sensor = nullptr,
+                            uint32_t seed = 0,
+                            uint32_t spp = 0);
+
     /// \brief Cancel a running render job (e.g. after receiving Ctrl-C)
     virtual void cancel();
 
@@ -439,6 +446,10 @@ protected:
                        ScalarFloat diff_scale_factor,
                        Mask active = true) const;
 
+    virtual void preprocess(Scene *scene,
+                            Sensor *sensor = nullptr,
+                            uint32_t seed = 0,
+                            uint32_t spp = 0) override;
 protected:
 
     /// Size of (square) image blocks to render in parallel (in scalar mode)
@@ -451,6 +462,16 @@ protected:
      * If set to (uint32_t) -1, all the work is done in a single pass (default).
      */
     uint32_t m_samples_per_pass;
+
+    /**
+     * \brief Path guider to approximately importance sample indirect lighting
+     *
+     * Mostly follows the details in:
+     * "Practical Path Guiding for Efficient Light-Transport Simulation"
+     *     Thomas Muller, Markus Gross, Jan Novak
+     *     Proceedings of EGSR 2017, vol. 36, no.4
+     */
+    ref<PathGuide<Float, Spectrum>> m_pathguider;
 };
 
 /** \brief Abstract integrator that performs *recursive* Monte Carlo sampling

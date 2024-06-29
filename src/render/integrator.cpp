@@ -83,6 +83,11 @@ Integrator<Float, Spectrum>::render_backward(Scene* scene,
     }
 }
 
+MI_VARIANT void Integrator<Float, Spectrum>::preprocess(Scene * /* scene */,
+                                                        Sensor * /* sensor */,
+                                                        uint32_t /* seed */,
+                                                        uint32_t /* spp */) {}
+
 MI_VARIANT std::vector<std::string> Integrator<Float, Spectrum>::aov_names() const {
     return { };
 }
@@ -97,6 +102,9 @@ MI_VARIANT SamplingIntegrator<Float, Spectrum>::SamplingIntegrator(const Propert
     : Base(props) {
 
     m_block_size = props.get<uint32_t>("block_size", 0);
+    m_pathguider = new PathGuide<Float, Spectrum>(
+        props.get<float>("pg_budget", 0.f),
+        props.get<float>("pg_jitter", 0.5f));
 
     // If a block size is specified, ensure that it is a power of two
     uint32_t block_size = math::round_to_power_of_two(m_block_size);
@@ -498,6 +506,67 @@ SamplingIntegrator<Float, Spectrum>::sample(const Scene * /* scene */,
                                             Float * /* aovs */,
                                             Mask /* active */) const {
     NotImplementedError("sample");
+}
+
+MI_VARIANT void SamplingIntegrator<Float, Spectrum>::preprocess(Scene *scene,
+                                                                Sensor *sensor,
+                                                                uint32_t seed,
+                                                                uint32_t spp) {
+    if (m_pathguider.get() && m_pathguider->enabled()) {
+        // default to the first sensor if none provided
+        if (sensor == nullptr)
+            sensor = scene->sensors()[0].get();
+        Assert(sensor != nullptr);
+
+        // get the number of samples for the scene
+        if (spp == 0)
+            spp = sensor->sampler()->sample_count();
+
+        // initialize path guiding with scene bounds
+        m_pathguider->initialize(spp, scene->bbox());
+
+        // calculate the number of samples used per training pass (render)
+        const uint32_t pg_train_spp = spp * m_pathguider->get_training_budget();
+        Log(Info, "Starting PathGuide training (%zu samples, %.1f%%)",
+            pg_train_spp, 100.f * m_pathguider->get_training_budget());
+
+        // create a progress reporter for the pathguide training process:
+        // rather than updating the progress indicator in the following for loop
+        // (which has very few progress updates) we track internal state
+        // variables for the path guider to update
+        auto progress                   = new ProgressReporter("Training PG");
+        const ScalarVector2u &film_size = sensor->film()->crop_size();
+        const uint32_t num_pixels       = film_size.x() * film_size.y();
+        m_pathguider->set_train_progress(progress, num_pixels);
+
+        // silence verbosity for the following render() calls
+        Logger *logger            = mitsuba::Thread::thread()->logger();
+        const auto prev_log_level = logger->log_level();
+        logger->set_log_level(LogLevel::Error);
+
+        // double the number of samples across iterations
+        for (size_t pass = 0; !m_pathguider->done_training(); pass++) {
+            // number of samples to use on this pass
+            const uint32_t spp_i  = m_pathguider->get_pass_spp(pass);
+            const uint32_t seed_i = seed + spp_i; // each pass has a unique seed
+
+            // render a pass of the scene (collecting pathguide samples)
+            // (omit develop and evaluate since these renders are for pg)
+            render(scene, sensor, seed_i, spp_i, false, false);
+
+            // pathguide SD-tree refinement is not thread safe, so it is done
+            // sequentially here after the (parallel) render is completed
+            m_pathguider->perform_refinement();
+        }
+        progress->update(1.f); // finish here
+
+        // set the render spp to subtract the path guider training budget
+        sensor->sampler()->set_sample_count(spp - std::min(spp, pg_train_spp));
+
+        // restore the logger log level to prior to this preprocessing
+        logger->set_log_level(prev_log_level);
+        Log(Info, "PathGuide training finished. Switching to final render:");
+    }
 }
 
 // -----------------------------------------------------------------------------

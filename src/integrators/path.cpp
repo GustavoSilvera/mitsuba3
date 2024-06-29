@@ -110,6 +110,10 @@ public:
         Float eta                     = 1.f;
         UInt32 depth                  = 0;
 
+        // Get path guider for [optional] path guiding
+        // See mitsuba/render/PathGuide.h for more information
+        auto *pg = (this->m_pathguider.get());
+
         // If m_hide_emitters == false, the environment emitter will be visible
         Mask valid_ray = !m_hide_emitters && (scene->environment() != nullptr);
 
@@ -137,10 +141,11 @@ public:
             Bool prev_bsdf_delta;
             Bool active;
             Sampler* sampler;
+            const PathGuide<Float, Spectrum>* pg;
 
             DRJIT_STRUCT(LoopState, ray, throughput, result, eta, depth, \
                 valid_ray, prev_si, prev_bsdf_pdf, prev_bsdf_delta,
-                active, sampler)
+                active, sampler, pg)
         } ls = {
             ray,
             throughput,
@@ -152,9 +157,9 @@ public:
             prev_bsdf_pdf,
             prev_bsdf_delta,
             active,
-            sampler
+            sampler,
+            pg
         };
-
         dr::tie(ls) = dr::while_loop(dr::make_tuple(ls),
             [](const LoopState& ls) { return ls.active; },
             [this, scene, bsdf_ctx](LoopState& ls) {
@@ -236,6 +241,15 @@ public:
             auto [bsdf_val, bsdf_pdf, bsdf_sample, bsdf_weight]
                 = bsdf->eval_pdf_sample(bsdf_ctx, si, wo, sample_1, sample_2);
 
+            // ------------------------ Path Guiding ------------------------
+            if (ls.pg && ls.pg->enabled() && ls.pg->ready_for_sampling()) {
+                // bsdf_val, bsdf_pdf is eval(si.p, wo) of emitted bounce, so
+                // basically ignore them for pathguiding!
+
+                std::tie(bsdf_sample, bsdf_weight) = pg_mixture_sample(
+                    ls.pg, si, bsdf, bsdf_sample, bsdf_ctx, bsdf_weight, ls.sampler);
+            }
+
             // --------------- Emitter sampling contribution ----------------
 
             if (dr::any_or<true>(active_em)) {
@@ -297,14 +311,82 @@ public:
                no-op in non-differentiable variants. */
             ls.throughput[rr_active] *= dr::rcp(dr::detach(rr_prob));
 
+            if (ls.pg && ls.pg->enabled() && !ls.pg->done_training() &&
+                dr::all(ls.prev_bsdf_pdf > 0.f && !ls.prev_bsdf_delta && ls.valid_ray)) {
+                // add the intermediate values from throughput accumulation necessary
+                // for computing the incident radiance on each bounce
+                const_cast<PathGuide<Float, Spectrum> *>(ls.pg)->add_throughput(
+                    ls.ray.o, ls.ray.d, ls.result, ls.throughput, bsdf_sample.pdf);
+            }
+
             ls.active = active_next && (!rr_active || rr_continue) &&
                      (throughput_max != 0.f);
         });
+
+        if (ls.pg && ls.pg->enabled() && !ls.pg->done_training()) {
+            // using the intermediate values stored from throughput accumulation
+            // calculate the incident radiance at every bounce along this path
+            const_cast<PathGuide<Float, Spectrum> *>(ls.pg)
+                ->calc_radiance_from_thru(ls.sampler);
+        }
 
         return {
             /* spec  = */ dr::select(ls.valid_ray, ls.result, 0.f),
             /* valid = */ ls.valid_ray
         };
+    }
+
+    /**
+     * \brief Perform mixture sampling between the BSDF sample and pathguiding
+     */
+    std::pair<BSDFSample3f, Spectrum>
+    pg_mixture_sample(const PathGuide<Float, Spectrum> *pg,
+                      const SurfaceInteraction3f &si, const BSDFPtr &bsdf,
+                      const BSDFSample3f &bsdf_sample,
+                      const BSDFContext &bsdf_ctx, const Spectrum &bsdf_weight,
+                      Sampler *sampler) const {
+        // Ignore delta reflections since there is 0 probability of path guiding
+        Bool delta_brdf = has_flag(bsdf_sample.sampled_type, BSDFFlags::Delta);
+        if (pg == nullptr ||      // no pathguider
+            sampler == nullptr || // no sampler
+            dr::all(delta_brdf))  // delta reflection
+            return { bsdf_sample, bsdf_weight };
+
+        const Float alpha = 0.5f; // probability of path guiding
+        Float pg_pdf;             // pdf of path guiding
+        Float bsdf_pdf;           // pdf of BSDF sampling
+        Spectrum f_s;             // bsdf evaluation f_s(x)
+
+        Vector3f wo_mixture;
+        if (dr::all(sampler->next_1d() < alpha)) {
+            // sample a direction (and corresponding pdf) using path guiding
+            Vector3f pg_wo;
+            std::tie(pg_wo, pg_pdf) = pg->sample(si.p, sampler->next_2d());
+            // convert world-aligned to surface-aligned
+            wo_mixture = si.to_local(pg_wo);
+            // evaluate bsdf with the new sample dir
+            std::tie(f_s, bsdf_pdf) = bsdf->eval_pdf(bsdf_ctx, si, wo_mixture);
+        } else {
+            // use the bsdf_sample and bsdf_weight as the bsdf terms
+            wo_mixture = bsdf_sample.wo;
+            bsdf_pdf   = bsdf_sample.pdf;
+            // compute the bsdf eval by multiplying the weight by pdf
+            f_s = bsdf_weight * bsdf_sample.pdf;
+            // now with the bsdf value, we can use the pdf mixture
+            pg_pdf = pg->get_pdf(si.p, si.to_world(wo_mixture));
+        }
+
+        // mix together the bsdf probability and the pg probability
+        Spectrum mix_weight     = bsdf_weight;
+        BSDFSample3f mix_sample = bsdf_sample;
+        Float pdf_mixture       = dr::lerp(bsdf_pdf, pg_pdf, alpha);
+        if (dr::all(pdf_mixture > 0.f)) {
+            mix_weight     = (f_s / pdf_mixture);
+            mix_sample.wo  = wo_mixture;
+            mix_sample.pdf = pdf_mixture;
+        }
+
+        return { mix_sample, mix_weight };
     }
 
     //! @}
